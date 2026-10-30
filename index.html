@@ -112,9 +112,22 @@
         <textarea id="novelText" class="novel" placeholder="ここに小説の本文を貼り付けます（2万5千字程度まで快適に扱えます）"></textarea>
         <div class="pane-foot">
           <span id="charCount" class="count">0字</span>
-          <button class="btn primary" id="analyzeBtn">AIで場面に分ける</button>
         </div>
-        <p class="note">AIが物語の流れを読み、絵を切り替える場面と枚数を決めます。登場人物も自動で書き出します。</p>
+        <fieldset class="box scene-plan">
+          <legend>場面の数（絵の枚数）</legend>
+          <div class="plan-opts">
+            <label><input type="radio" name="sceneMode" value="auto"> AIにおまかせ</label>
+            <label><input type="radio" name="sceneMode" value="count"> 場面数で指定
+              <input type="number" id="sceneCount" class="num" min="2" max="150" step="1" value="40"> 場面</label>
+            <label><input type="radio" name="sceneMode" value="seconds"> 1場面の平均時間で指定
+              <input type="number" id="sceneSec" class="num" min="5" max="600" step="5" value="60"> 秒</label>
+          </div>
+          <p class="plan-est" id="sceneEstimate"></p>
+          <div class="pane-foot">
+            <span class="note">AIが物語の流れを読んで場面を分け、登場人物も書き出します。</span>
+            <button class="btn primary" id="analyzeBtn">AIで場面に分ける</button>
+          </div>
+        </fieldset>
       </div>
 
       <!-- 2 設定 -->

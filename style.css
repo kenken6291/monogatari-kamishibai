@@ -156,6 +156,13 @@ main { max-width: 1180px; margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }
 .sr-del { font: inherit; font-size: .8rem; background: none; border: 0; color: var(--danger); cursor: pointer; padding: .2em 0; text-decoration: underline; }
 .style-box .row { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .6rem; }
 
+/* 場面の数 */
+.scene-plan { margin-top: 1rem; }
+.plan-opts { display: flex; flex-direction: column; gap: .45rem; margin: .4rem 0; }
+.plan-opts label { margin: 0; font-weight: 400; display: flex; align-items: center; flex-wrap: wrap; gap: .3em; }
+.num { width: 6em; margin: 0 .2em; padding: .3em .5em; text-align: right; font-variant-numeric: tabular-nums; }
+.plan-est { background: var(--ai-soft); border-radius: 6px; padding: .5em .9em; margin: .6rem 0; font-weight: 500; }
+
 /* 字幕の同期 */
 .capsync { margin-bottom: 1.2rem; }
 

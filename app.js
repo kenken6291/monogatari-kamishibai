@@ -331,6 +331,10 @@ function loadEditor(p, step) {
   $('#projTitle').value = p.title || '';
   $('#novelText').value = p.text || '';
   updateCount();
+  $$('input[name=sceneMode]').forEach(r => { r.checked = r.value === (p.sceneMode || 'auto'); });
+  $('#sceneCount').value = p.sceneCount || 40;
+  $('#sceneSec').value = p.sceneSec || 60;
+  renderScenePlan();
   $$('input[name=aspect]').forEach(r => { r.checked = r.value === (p.aspect || '16:9'); });
   $('#styleInput').value = p.style || '';
   $('#styleRefAttach').checked = p.styleRefAttach !== false;
@@ -384,6 +388,39 @@ async function flushSave() {
   }
 }
 
+/* ---------- 場面の数の計画 ---------- */
+// 全体の長さ：取り込んだ朗読 → 生成済みの朗読の合計 → 文字数からの目安 の順で使う
+function totalReadSec() {
+  const p = state.project;
+  if (p?.narration?.duration) return { sec: p.narration.duration, src: '取り込んだ朗読' };
+  const sc = p?.scenes || [];
+  if (sc.length && sc.every(s => s.duration)) return { sec: sc.reduce((a, s) => a + s.duration, 0), src: '生成済みの朗読' };
+  return { sec: ($('#novelText').value.length || 0) / CHARS_PER_SEC, src: '文字数からの目安' };
+}
+
+function scenePlan() {
+  const mode = ($$('input[name=sceneMode]').find(r => r.checked) || {}).value || 'auto';
+  const n = $('#novelText').value.length;
+  const { sec } = totalReadSec();
+  let count;
+  if (mode === 'count') count = Number($('#sceneCount').value) || 0;
+  else if (mode === 'seconds') count = Math.round(sec / Math.max(5, Number($('#sceneSec').value) || 60));
+  else count = Math.max(4, Math.min(60, Math.round(n / 700)));
+  const capped = count > 150;
+  count = Math.max(2, Math.min(150, count));
+  return { mode, count, sec, capped };
+}
+
+function renderScenePlan() {
+  if (!state.project) return;
+  const { mode, count, sec, capped } = scenePlan();
+  const { src } = totalReadSec();
+  const per = sec / count;
+  const chars = Math.round(($('#novelText').value.length || 0) / count);
+  const head = mode === 'auto' ? `目安 約${count}場面` : `${count}場面（絵${count}枚）${capped ? '※上限の150場面' : ''}`;
+  $('#sceneEstimate').textContent = `${head}　／　1場面あたり 平均${fmtTime(per)}・約${chars.toLocaleString()}字　（全体 ${fmtTime(sec)}：${src}）`;
+}
+
 function updateCount() {
   const n = $('#novelText').value.length;
   const est = Math.max(4, Math.min(60, Math.round(n / 700)));
@@ -413,6 +450,7 @@ function initEditor() {
   $('#projTitle').addEventListener('input', () => scheduleSave({ title: $('#projTitle').value }));
   $('#novelText').addEventListener('input', () => {
     updateCount();
+    renderScenePlan();
     if ($('#novelText').value.length <= MAX_TEXT) scheduleSave({ text: $('#novelText').value });
   });
   $('#fileInput').addEventListener('change', async e => {
@@ -429,6 +467,17 @@ function initEditor() {
     e.target.value = '';
   });
   bindMic($('#micNovel'), $('#novelText'), $('#interimNovel'));
+  $$('input[name=sceneMode]').forEach(r => r.addEventListener('change', () => { scheduleSave({ sceneMode: r.value }); renderScenePlan(); }));
+  $('#sceneCount').addEventListener('input', () => {
+    $$('input[name=sceneMode]').forEach(x => { x.checked = x.value === 'count'; });
+    scheduleSave({ sceneMode: 'count', sceneCount: Number($('#sceneCount').value) || 0 });
+    renderScenePlan();
+  });
+  $('#sceneSec').addEventListener('input', () => {
+    $$('input[name=sceneMode]').forEach(x => { x.checked = x.value === 'seconds'; });
+    scheduleSave({ sceneMode: 'seconds', sceneSec: Number($('#sceneSec').value) || 0 });
+    renderScenePlan();
+  });
 
   $('#analyzeBtn').addEventListener('click', withBusy($('#analyzeBtn'), async () => {
     const text = $('#novelText').value;
@@ -438,8 +487,13 @@ function initEditor() {
     $('#analyzeBtn').textContent = 'AIが読んでいます…（1分ほど）';
     scheduleSave({ text });
     await flushSave();
-    const j = await api('analyze', { projectId: state.project.id });
+    const plan = scenePlan();
+    if (plan.count > 100 && !confirm(`${plan.count}場面に分けます。絵の生成にかなり時間がかかりますが、よろしいですか？`)) return;
+    $('#analyzeBtn').textContent = plan.count > 60 ? 'AIが読んでいます…（2〜3分）' : 'AIが読んでいます…（1分ほど）';
+    const j = await api('analyze', { projectId: state.project.id, sceneCount: plan.mode === 'auto' ? 0 : plan.count });
     state.project = j.project;
+    const got = j.project.scenes.length;
+    if (plan.mode !== 'auto' && got !== plan.count) toast(`本文の区切りの都合で${got}場面になりました`, true);
     renderChars();
     toast(`${j.project.scenes.length}場面に分けました。絵と声の設定を確認してください`);
     goStep(2);

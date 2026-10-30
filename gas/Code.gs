@@ -3,7 +3,7 @@
  * 小説 → 場面分割 → 漫画風静止画 → 朗読音声（Gemini TTS）
  * 保存先：Google Drive（作品ごとにフォルダ / project.json）＋会員はスプレッドシート
  */
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 const SP = PropertiesService.getScriptProperties();
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const USER_COLS = ['email', 'name', 'salt', 'hash', 'mustChange', 'createdAt', 'agreedAt', 'lastLogin', 'failCount', 'lockedUntil'];
@@ -268,7 +268,7 @@ function saveProject(req, u) {
   if (inP.text && inP.text.length > 60000) throw new Error('本文が長すぎます（6万字まで）');
   if (inP.aspect && ASPECTS.indexOf(inP.aspect) < 0) throw new Error('画像サイズの指定が不正です');
   if (inP.audioMode && ['scenes', 'narration'].indexOf(inP.audioMode) < 0) throw new Error('音声の種類が不正です');
-  const keys = ['title', 'text', 'aspect', 'style', 'voice', 'characters', 'scenes', 'subtitles', 'audioMode', 'narrationStarts', 'styleRefAttach', 'captions'];
+  const keys = ['title', 'text', 'aspect', 'style', 'voice', 'characters', 'scenes', 'subtitles', 'audioMode', 'narrationStarts', 'styleRefAttach', 'captions', 'sceneMode', 'sceneCount', 'sceneSec'];
   if (!inP.id) {
     const id = Utilities.getUuid().slice(0, 8) + Date.now().toString(36);
     const folder = userFolder(u).createFolder('p_' + id);
@@ -362,25 +362,82 @@ function splitParagraphs(text) {
   return String(text || '').replace(/\r\n?/g, '\n').split(/\n+/).map(s => s.trim()).filter(s => s);
 }
 
+const MAX_SCENES = 150;
+
+// 本文を「単位」に分ける。場面数に対して段落が少なければ文単位まで細かくする
+function splitUnits(text, want) {
+  const paras = splitParagraphs(text);
+  const units = paras.map((t, i) => ({ t: t, p: i }));
+  if (!want || paras.length >= want * 2) return units;
+  const out = [];
+  paras.forEach((t, i) => {
+    const sents = t.match(/[^。！？!?]+[。！？!?」』）)]*/g) || [t];
+    sents.forEach(x => { if (x.trim()) out.push({ t: x.trim(), p: i }); });
+  });
+  return out;
+}
+
+// 同じ段落の文はつなげ、段落が変わるところで改行する
+function joinUnits(units, a, b) {
+  let s = '';
+  for (let i = a; i <= b; i++) s += (i > a && units[i].p !== units[i - 1].p ? '\n' : '') + units[i].t;
+  return s;
+}
+
+// AIの場面数が指定と違うとき、短い場面同士をまとめる／長い場面を分けて合わせる
+function adjustSceneCount(scenes, units, want) {
+  const len = s => s.text.length;
+  while (scenes.length > want) {
+    let bi = 0, bl = Infinity;
+    for (let i = 0; i < scenes.length - 1; i++) { const l = len(scenes[i]) + len(scenes[i + 1]); if (l < bl) { bl = l; bi = i; } }
+    const a = scenes[bi], b = scenes[bi + 1];
+    a.paraEnd = b.paraEnd;
+    a.text = joinUnits(units, a.paraStart, a.paraEnd);
+    a.characters = a.characters.concat(b.characters.filter(c => a.characters.indexOf(c) < 0));
+    scenes.splice(bi + 1, 1);
+  }
+  while (scenes.length < want) {
+    let bi = -1, bl = 0;
+    scenes.forEach((s, i) => { if (s.paraEnd > s.paraStart && len(s) > bl) { bl = len(s); bi = i; } });
+    if (bi < 0) break;
+    const s = scenes[bi];
+    let acc = 0, mid = s.paraStart;
+    for (let i = s.paraStart; i < s.paraEnd; i++) { acc += units[i].t.length; mid = i; if (acc >= len(s) / 2) break; }
+    const second = JSON.parse(JSON.stringify(s));
+    s.paraEnd = mid; s.text = joinUnits(units, s.paraStart, mid);
+    second.paraStart = mid + 1; second.text = joinUnits(units, mid + 1, second.paraEnd);
+    second.summary = s.summary + '（続き）';
+    second.imagePrompt = s.imagePrompt + '（前の場面の続き。構図・カメラアングル・人物の動きを変えて描く）';
+    second.effect = s.effect === 'zoomIn' ? 'panRight' : 'zoomIn';
+    scenes.splice(bi + 1, 0, second);
+  }
+}
+
 function analyze(req, u) {
   const folder = projectFolder(u, req.projectId);
   const p = readProject(folder);
-  const paras = splitParagraphs(p.text);
   const total = (p.text || '').length;
   if (total < 100) throw new Error('本文が短すぎます（100字以上にしてください）');
-  const target = Math.max(4, Math.min(60, Math.round(total / 700)));
+  let want = Math.round(Number(req.sceneCount) || 0);
+  if (want) want = Math.max(2, Math.min(MAX_SCENES, want));
+  const paras = splitUnits(p.text, want);
+  if (want > paras.length) want = paras.length;
+  const target = want || Math.max(4, Math.min(60, Math.round(total / 700)));
   const known = (p.characters || []).map(c => '・' + c.name + '：' + c.features).join('\n');
   const prompt = [
-    'あなたは紙芝居と漫画の演出家です。下の段落番号つき小説を、静止画（漫画風の1枚絵）を切り替える「場面」に分けてください。',
-    '・場面数の目安：' + Math.round(target * 0.7) + '〜' + Math.round(target * 1.3) + '（全' + total + '字）。山場や場面転換は細かく、説明的な部分はまとめる。',
-    '・各場面は連続した段落の範囲 paraStart〜paraEnd（両端を含む）。最初の場面は0から、最後の場面は' + (paras.length - 1) + 'まで。抜けや重なりがないこと。',
-    '・imagePrompt：その場面の1枚絵の具体的な描写（構図、人物の表情・動作、背景、時間帯、天候、カメラアングル）。文字や吹き出しは含めない。',
+    'あなたは紙芝居と漫画の演出家です。下の番号つき小説を、静止画（漫画風の1枚絵）を切り替える「場面」に分けてください。',
+    want
+      ? '・場面数は必ず ' + want + ' 個にしてください（全' + total + '字）。山場や場面転換は細かく、説明的な部分はまとめつつ、なるべく均等な長さに近づける。'
+      : '・場面数の目安：' + Math.round(target * 0.7) + '〜' + Math.round(target * 1.3) + '（全' + total + '字）。山場や場面転換は細かく、説明的な部分はまとめる。',
+    '・各場面は連続した番号の範囲 paraStart〜paraEnd（両端を含む）。最初の場面は0から、最後の場面は' + (paras.length - 1) + 'まで。抜けや重なりがないこと。',
+    '・imagePrompt：その場面の1枚絵の具体的な描写（構図、人物の表情・動作、背景、時間帯、天候、カメラアングル）を' + (target > 60 ? '80' : '150') + '字以内で。文字や吹き出しは含めない。',
+    '・summary：場面のあらすじを' + (target > 60 ? '25' : '40') + '字以内で。',
     '・effect：場面の雰囲気に合う画面の動き。' + EFFECTS.join(' / ') + ' から1つ。',
     '・characters：その場面に描く人物名。cast の name と完全一致させる。',
     '・cast：主要登場人物。features には年齢感・髪型・髪色・服装・体格・性格を本文から推定して書く。',
     known ? '・すでに登録済みの人物（名前はこれに合わせる）：\n' + known : '',
     '', '【小説】',
-    paras.map((t, i) => '[' + i + '] ' + t).join('\n')
+    paras.map((x, i) => '[' + i + '] ' + x.t).join('\n')
   ].join('\n');
 
   const schema = {
@@ -401,12 +458,12 @@ function analyze(req, u) {
   };
   const res = callGemini(model('text'), {
     contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { responseMimeType: 'application/json', responseSchema: schema, temperature: 0.4 }
+    generationConfig: { responseMimeType: 'application/json', responseSchema: schema, temperature: 0.4, maxOutputTokens: 60000 }
   });
   let out;
-  try { out = JSON.parse(textOf(res)); } catch (e) { throw new Error('解析結果を読み取れませんでした。もう一度お試しください'); }
+  try { out = JSON.parse(textOf(res)); } catch (e) { throw new Error('解析結果を読み取れませんでした。場面数を減らすか、もう一度お試しください'); }
 
-  // 段落範囲を正規化（抜け・重なりを補正）
+  // 範囲を正規化（抜け・重なりを補正）
   const raw = (out.scenes || []).filter(s => isFinite(s.paraStart)).sort((a, b) => a.paraStart - b.paraStart);
   if (!raw.length) throw new Error('場面を分割できませんでした');
   const scenes = [];
@@ -414,10 +471,10 @@ function analyze(req, u) {
   raw.forEach(s => {
     if (next > paras.length - 1) return;
     const st = next;
-    let en = Math.min(Math.max(Number(s.paraEnd), st), paras.length - 1);
+    const en = Math.min(Math.max(Number(s.paraEnd), st), paras.length - 1);
     scenes.push({
       paraStart: st, paraEnd: en,
-      text: paras.slice(st, en + 1).join('\n'),
+      text: joinUnits(paras, st, en),
       summary: s.summary, location: s.location, characters: s.characters || [],
       imagePrompt: s.imagePrompt,
       effect: EFFECTS.indexOf(s.effect) >= 0 ? s.effect : 'zoomIn',
@@ -428,8 +485,9 @@ function analyze(req, u) {
   if (next <= paras.length - 1) {
     const last = scenes[scenes.length - 1];
     last.paraEnd = paras.length - 1;
-    last.text = paras.slice(last.paraStart).join('\n');
+    last.text = joinUnits(paras, last.paraStart, last.paraEnd);
   }
+  if (want) adjustSceneCount(scenes, paras, want);
 
   return {
     project: withProject(u, p.id, pp => {
@@ -439,6 +497,7 @@ function analyze(req, u) {
       });
       pp.scenes = scenes;
       pp.paraCount = paras.length;
+      pp.captions = null;
       if (pp.narration) { pp.narration.starts = ratioStarts(scenes, pp.narration.duration); pp.narration.aligned = 'ratio'; }
       pp.characters = pp.characters || [];
       (out.cast || []).forEach(c => {
