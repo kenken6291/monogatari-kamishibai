@@ -3,7 +3,7 @@
  * 小説 → 場面分割 → 漫画風静止画 → 朗読音声（Gemini TTS）
  * 保存先：Google Drive（作品ごとにフォルダ / project.json）＋会員はスプレッドシート
  */
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.5.0';
 const SP = PropertiesService.getScriptProperties();
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const USER_COLS = ['email', 'name', 'salt', 'hash', 'mustChange', 'createdAt', 'agreedAt', 'lastLogin', 'failCount', 'lockedUntil'];
@@ -69,7 +69,7 @@ const HANDLERS = {
   listProjects, getProject, saveProject, deleteProject,
   analyze, uploadFile, generateImage, generateCharacterSheet, generateTTS, getAsset,
   uploadSceneAudio, narrationPart, narrationCommit, deleteNarration, alignNarration,
-  removeStyleRef, analyzeStyle
+  removeStyleRef, analyzeStyle, alignWindow
 };
 
 /* ========== 会員 ========== */
@@ -268,7 +268,7 @@ function saveProject(req, u) {
   if (inP.text && inP.text.length > 60000) throw new Error('本文が長すぎます（6万字まで）');
   if (inP.aspect && ASPECTS.indexOf(inP.aspect) < 0) throw new Error('画像サイズの指定が不正です');
   if (inP.audioMode && ['scenes', 'narration'].indexOf(inP.audioMode) < 0) throw new Error('音声の種類が不正です');
-  const keys = ['title', 'text', 'aspect', 'style', 'voice', 'characters', 'scenes', 'subtitles', 'audioMode', 'narrationStarts', 'styleRefAttach'];
+  const keys = ['title', 'text', 'aspect', 'style', 'voice', 'characters', 'scenes', 'subtitles', 'audioMode', 'narrationStarts', 'styleRefAttach', 'captions'];
   if (!inP.id) {
     const id = Utilities.getUuid().slice(0, 8) + Date.now().toString(36);
     const folder = userFolder(u).createFolder('p_' + id);
@@ -298,7 +298,10 @@ function saveProject(req, u) {
         const st = inP.narrationStarts;
         if (!p.narration || !Array.isArray(st) || st.length !== (p.scenes || []).length) return;
         p.narration.starts = st.map(Number);
-        p.narration.aligned = 'manual';
+        p.narration.aligned = ['ai', 'manual'].indexOf(inP.narrationAligned) >= 0 ? inP.narrationAligned : 'manual';
+      } else if (k === 'captions') {
+        if (inP.captions && JSON.stringify(inP.captions).length > 800000) throw new Error('字幕データが大きすぎます');
+        p.captions = inP.captions || null;
       } else p[k] = inP[k];
     });
   });
@@ -868,4 +871,34 @@ function analyzeStyle(req, u) {
   const text = textOf(callGemini(model('text'), { contents: [{ parts: parts }], generationConfig: { temperature: 0.3 } })).trim();
   if (!text) throw new Error('作風を読み取れませんでした');
   return { project: withProject(u, p.id, pp => { pp.style = text; }) };
+}
+
+/* ========== 字幕の同期（朗読の一部を聞かせて各行の読み始め時刻を得る） ========== */
+function alignWindow(req, u) {
+  projectFolder(u, req.projectId); // 本人の作品か確認
+  const lines = (req.lines || []).slice(0, 150).map(t => String(t).slice(0, 200));
+  if (!lines.length) return { starts: [] };
+  const data = String(req.audio || '');
+  if (!data) throw new Error('音声がありません');
+  if (data.length > 15 * 1024 * 1024) throw new Error('区間の音声が大きすぎます');
+  const prompt = [
+    'この音声は小説の朗読の一部です（長さ ' + Number(req.duration || 0).toFixed(1) + ' 秒）。',
+    '下の各行について、その行の最初の言葉が読み始められる時刻を、この音声の先頭からの秒数（小数2桁）で答えてください。',
+    '行は朗読の順番どおりに並んでいます。この音声の中で読まれていない行（音声の範囲より前や後ろの行）は -1 にしてください。',
+    'ルビ・表記の違い・言い換え・読み飛ばしがあっても、最も近い位置を答えてください。',
+    '',
+    lines.map((t, i) => '[' + i + '] ' + t).join('\n')
+  ].join('\n');
+  const res = callGemini(prop('ALIGN_MODEL', model('text')), {
+    contents: [{ parts: [{ inlineData: { mimeType: 'audio/wav', data: data } }, { text: prompt }] }],
+    generationConfig: {
+      responseMimeType: 'application/json', temperature: 0,
+      responseSchema: { type: 'OBJECT', properties: { starts: { type: 'ARRAY', items: { type: 'OBJECT', properties: { i: { type: 'INTEGER' }, sec: { type: 'NUMBER' } }, required: ['i', 'sec'] } } }, required: ['starts'] }
+    }
+  });
+  const out = lines.map(() => -1);
+  let arr = [];
+  try { arr = JSON.parse(textOf(res)).starts || []; } catch (e) { }
+  arr.forEach(a => { if (a.i >= 0 && a.i < out.length && isFinite(a.sec)) out[a.i] = Number(a.sec); });
+  return { starts: out };
 }

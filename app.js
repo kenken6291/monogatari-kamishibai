@@ -375,7 +375,7 @@ async function flushSave() {
     const j = await api('saveProject', { project: { id: state.project.id, ...f } });
     // 生成中の場面データを上書きしないよう、送った項目だけ反映
     // 場面・人物は画面で編集中のオブジェクトをそのまま使い続ける
-    Object.keys(f).forEach(k => { if (!['scenes', 'characters', 'narrationStarts'].includes(k)) state.project[k] = j.project[k]; });
+    Object.keys(f).forEach(k => { if (!['scenes', 'characters', 'narrationStarts', 'narrationAligned'].includes(k)) state.project[k] = j.project[k]; });
     state.project.updatedAt = j.project.updatedAt;
     $('#saveState').textContent = '保存済み';
   } catch (e) {
@@ -534,6 +534,7 @@ function initEditor() {
     renderScenes();
   }));
   initTapAlign();
+  $('#capSyncBtn').addEventListener('click', runCaptionSync);
 
   // 場面モーダル
   $('#smCancel').addEventListener('click', () => $('#sceneModal').close());
@@ -751,6 +752,7 @@ function renderScenes() {
   loadThumbs(body);
   renderTimeline();
   renderNarrInfo();
+  renderCapSyncInfo();
 }
 
 async function loadThumbs(root) {
@@ -1187,6 +1189,210 @@ async function buildAllCaptions(mode, maxLen) {
   });
 }
 
+/* ---------- AIによる字幕同期 ----------
+   朗読を2分半ずつの区間に切ってAIに聞かせ、各字幕が読まれ始める時刻を返してもらう。
+   区間は「前の区間で確定した最後の字幕」から始めるので、ずれが積み重ならない。
+   AIの時刻は、近くにある声の立ち上がり（無音→有音）に吸着させて精度を上げる。 */
+function capMaxLen() {
+  const [W, H] = CANVAS[state.project.aspect] || CANVAS['16:9'];
+  return W > H ? 34 : 18;
+}
+
+function capSig() {
+  const p = state.project;
+  const mode = audioMode();
+  const audio = mode === 'narration' ? 'n:' + p.narration.uploadId : 's:' + p.scenes.map(s => s.audioFileId || '-').join(',');
+  return [mode, audio, capMaxLen(), p.scenes.map(s => (s.text || '').length).join(',')].join('|');
+}
+
+function savedCaptions(maxLen) {
+  const p = state.project;
+  const c = p.captions;
+  if (!c || c.sig !== capSig()) return null;
+  const times = sceneTimes();
+  const out = [];
+  for (let si = 0; si < p.scenes.length; si++) {
+    const segs = capSegments(p.scenes[si].text, maxLen);
+    const ts = c.times[si] || [];
+    if (ts.length !== segs.length) return null;
+    const base = c.abs ? times[si].from : 0;
+    const end = times[si].dur;
+    out.push(segs.map((g, k) => ({ text: g.text, from: ts[k] - base, to: k + 1 < segs.length ? ts[k + 1] - base : end })));
+  }
+  return out;
+}
+
+function renderCapSyncInfo() {
+  const p = state.project;
+  const el = $('#capSyncInfo');
+  if (!el || !p) return;
+  $('#capSyncBtn').disabled = state.running || !(p.scenes || []).length;
+  if (p.captions && p.captions.sig === capSig()) el.textContent = `AIで同期済み（${new Date(p.captions.at).toLocaleString('ja-JP')}、${p.captions.found}/${p.captions.total}文を確認）`;
+  else if (p.captions) el.textContent = '朗読か本文が変わったため、同期をやり直してください（いまは間の検出で表示）';
+  else el.textContent = '未同期（いまは朗読の間を検出して表示しています）';
+}
+
+async function decodeMono16k(blob) {
+  const ctx = new OfflineAudioContext(1, 16000, 16000); // decodeAudioData はこのサンプルレートに変換して返す
+  const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
+  return { data: buf.getChannelData(0), rate: buf.sampleRate };
+}
+
+function encodeWav(samples, rate) {
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < 4; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) {
+    const x = Math.max(-1, Math.min(1, samples[i]));
+    v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+  }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+const SYNC_WIN = 150, SYNC_TAIL = 15;
+
+async function alignUnit(unit, onWin) {
+  const { data, rate } = unit.audio;
+  const dur = data.length / rate;
+  const items = unit.items;
+  const totalChars = items.reduce((a, x) => a + x.text.length, 0);
+  const cps = Math.max(3, totalChars / Math.max(1, dur));
+  let pos = 0, k = 0, guard = 0;
+  while (k < items.length && pos < dur - 0.5 && guard++ < 1000) {
+    if (state.stop) throw new Error('同期を止めました');
+    const w1 = Math.min(dur, pos + SYNC_WIN);
+    const isLast = w1 >= dur - 0.01;
+    const cap = (w1 - pos) * cps * 1.4;
+    const batch = [];
+    let chars = 0;
+    for (let j = k; j < items.length && batch.length < 150; j++) { batch.push(j); chars += items[j].text.length; if (chars > cap) break; }
+    const wav = encodeWav(data.subarray(Math.floor(pos * rate), Math.floor(w1 * rate)), rate);
+    const audio = await blobToBase64(wav);
+    const res = await retry(() => api('alignWindow', { projectId: state.project.id, audio, duration: w1 - pos, lines: batch.map(j => items[j].text) }), 2);
+    onWin(pos, dur);
+    let prev = -1, lastJ = -1;
+    res.starts.forEach((t, bi) => {
+      if (typeof t !== 'number' || t < 0 || t > w1 - pos || t <= prev + 0.2) return;
+      if (!isLast && t > (w1 - pos) - SYNC_TAIL) return; // 区間の終わり際は次の区間で確かめる
+      items[batch[bi]].t = pos + t;
+      prev = t;
+      lastJ = batch[bi];
+    });
+    if (isLast) break;
+    if (lastJ < 0) { pos += (w1 - pos) * 0.8; continue; }
+    k = lastJ + 1;
+    pos = Math.max(pos + 10, items[lastJ].t + 0.3);
+  }
+}
+
+// 確認できなかった字幕は前後の確認済みの位置から文字数で補い、声の立ち上がりに吸着させる
+function finishTimes(items, audio, t0, t1) {
+  const n = items.length;
+  if (!n) return;
+  const cum = [0];
+  items.forEach((x, i) => { cum[i + 1] = cum[i] + x.text.length; });
+  const known = [];
+  items.forEach((x, i) => { if (x.t != null) known.push(i); });
+  items.forEach((x, i) => {
+    if (x.t != null) return;
+    let p = -1, q = -1;
+    for (const k of known) { if (k < i) p = k; else if (k > i) { q = k; break; } }
+    const pT = p >= 0 ? items[p].t : t0, pC = p >= 0 ? cum[p] : 0;
+    const qT = q >= 0 ? items[q].t : t1, qC = q >= 0 ? cum[q] : cum[n];
+    x.t = pT + (qT - pT) * (cum[i] - pC) / Math.max(1, qC - pC);
+    x.guessed = true;
+  });
+  // 声の立ち上がりへの吸着
+  const env = envelope(audio.data, audio.rate);
+  const floor = percentile(env, 0, env.length, 0.1), loud = percentile(env, 0, env.length, 0.9);
+  const thr = floor + (loud - floor) * 0.12;
+  items.forEach(x => {
+    const range = x.guessed ? 0.8 : 0.5;
+    const a = Math.max(1, Math.floor((x.t - range) / ENV_HOP)), b = Math.min(env.length - 1, Math.ceil((x.t + 0.3) / ENV_HOP));
+    let best = null;
+    for (let f = a; f <= b; f++) {
+      if (env[f - 1] < thr && env[f] >= thr) {
+        const t = f * ENV_HOP;
+        if (best == null || Math.abs(t - x.t) < Math.abs(best - x.t)) best = t;
+      }
+    }
+    if (best != null) x.t = best - 0.08;
+  });
+  for (let i = 1; i < n; i++) if (items[i].t < items[i - 1].t + 0.15) items[i].t = items[i - 1].t + 0.15;
+}
+
+async function runCaptionSync() {
+  if (state.running) return;
+  const p = state.project;
+  const scenes = p.scenes || [];
+  if (!scenes.length) { toast('先に本文を場面に分けてください', true); return; }
+  const mode = audioMode();
+  const maxLen = capMaxLen();
+  const segs = scenes.map(s => capSegments(s.text, maxLen));
+  if (mode === 'scenes' && !scenes.some(s => s.audioFileId)) { toast('朗読の音声がまだありません', true); return; }
+  state.running = true; state.stop = false;
+  $('#genImagesBtn').disabled = $('#genAudioBtn').disabled = $('#capSyncBtn').disabled = true;
+  $('#stopBtn').hidden = false; $('#stopBtn').textContent = '止める';
+  $('#progressWrap').hidden = false;
+  const prog = (t, r) => { $('#progressBar').style.width = (r * 100).toFixed(1) + '%'; $('#progressText').textContent = t; };
+  try {
+    await flushSave();
+    const times = scenes.map(() => null);
+    let found = 0, total = 0;
+    if (mode === 'narration') {
+      prog('朗読ファイルを読み込んでいます…', 0);
+      const nc = await narrationBlob();
+      const audio = await decodeMono16k(nc.blob);
+      const items = [];
+      segs.forEach((arr, si) => arr.forEach(g => items.push({ si, text: g.text, t: null })));
+      const dur = audio.data.length / audio.rate;
+      await alignUnit({ audio, items }, (pos, d) => prog(`AIが朗読を聞いています… ${fmtTime(pos)} / ${fmtTime(d)}`, pos / d));
+      found = items.filter(x => x.t != null).length; total = items.length;
+      if (found < Math.max(2, total * 0.2)) throw new Error('朗読と本文がほとんど一致しませんでした。朗読ファイルと本文が同じ作品か確認してください');
+      finishTimes(items, audio, 0, dur);
+      scenes.forEach((s, si) => { times[si] = items.filter(x => x.si === si).map(x => Math.round(x.t * 100) / 100); });
+      // 絵の切り替え位置＝各場面の最初の字幕の少し前
+      const starts = scenes.map((s, si) => si === 0 ? 0 : Math.max(0, (times[si][0] ?? 0) - 0.3));
+      for (let i = 1; i < starts.length; i++) if (starts[i] <= starts[i - 1] + 0.5) starts[i] = starts[i - 1] + 0.5;
+      p.narration.starts = starts.map(x => Math.round(x * 10) / 10);
+      p.narration.aligned = 'ai';
+      scheduleSave({ narrationStarts: p.narration.starts, narrationAligned: 'ai' });
+    } else {
+      const targets = scenes.map((s, i) => i).filter(i => scenes[i].audioFileId);
+      for (let n = 0; n < targets.length; n++) {
+        const si = targets[n];
+        if (state.stop) throw new Error('同期を止めました');
+        prog(`AIが朗読を聞いています… 場面${si + 1}（${n + 1}/${targets.length}）`, n / targets.length);
+        const audio = await decodeMono16k((await asset(scenes[si].audioFileId)).blob);
+        const items = segs[si].map(g => ({ si, text: g.text, t: null }));
+        await alignUnit({ audio, items }, () => {});
+        finishTimes(items, audio, 0, audio.data.length / audio.rate);
+        found += items.filter(x => x.t != null && !x.guessed).length; total += items.length;
+        times[si] = items.map(x => Math.round(x.t * 100) / 100);
+      }
+      // 音声のない場面は文字数で割り振る
+      scenes.forEach((s, si) => { if (!times[si]) times[si] = alignCaps(segs[si], null, 0, sceneDur(s)).map(c => Math.round(c.from * 100) / 100); });
+    }
+    p.captions = { sig: capSig(), abs: mode === 'narration', times, found, total, at: new Date().toISOString() };
+    scheduleSave({ captions: p.captions });
+    await flushSave();
+    prog(`同期が終わりました（${found}/${total}文をAIが確認、残りは前後から補完）`, 1);
+    toast('字幕を音声に合わせました。「上演・書き出し」で確かめてください');
+  } catch (e) {
+    prog('同期を中断しました', 0);
+    toast(e.message, true);
+  } finally {
+    state.running = false;
+    $('#genImagesBtn').disabled = $('#genAudioBtn').disabled = false;
+    $('#stopBtn').hidden = true;
+    renderScenes();
+  }
+}
+
 function capOffset() { return Number(localStorage.getItem('mk_cap_offset') || 0); }
 
 async function preparePlayer() {
@@ -1199,14 +1405,14 @@ async function preparePlayer() {
   renderCueList();
   if (!scenes.length) { $('#prepStatus').textContent = '場面がありません'; drawCard('場面がまだありません'); return; }
   const mode = audioMode();
-  const sig = p.id + ':' + mode + ':' + (mode === 'narration' ? p.narration.uploadId + '@' + p.narration.starts.join(',') : '') + ':' + scenes.map(s => (s.imageFileId || '') + (s.audioFileId || '')).join('|');
+  const sig = p.id + ':' + mode + ':' + (mode === 'narration' ? p.narration.uploadId + '@' + p.narration.starts.join(',') : '') + ':' + scenes.map(s => (s.imageFileId || '') + (s.audioFileId || '')).join('|') + ':' + (p.captions ? p.captions.at : '');
   if (pl.ready && pl.loadingFor === sig) { $('#prepStatus').textContent = '準備できています'; return; }
   pl.ready = false; pl.loadingFor = sig;
   if (!pl.ctx) pl.ctx = new (window.AudioContext || window.webkitAudioContext)();
   $('#playBtn').disabled = $('#recordBtn').disabled = true;
   drawCard(p.title || 'ものがたり紙芝居');
   pl.images = []; pl.buffers = [];
-  const capLen = W > H ? 34 : 18;
+  const capLen = capMaxLen();
   let done = 0;
   const total = scenes.length;
   const status = () => { $('#prepStatus').textContent = `素材を読み込み中… ${done}/${total}`; };
@@ -1254,7 +1460,7 @@ async function preparePlayer() {
     if (pl.loadingFor !== sig) return;
   }
   $('#prepStatus').textContent = '字幕を朗読の間に合わせています…';
-  pl.caps = await buildAllCaptions(mode, capLen);
+  pl.caps = savedCaptions(capLen) || await buildAllCaptions(mode, capLen);
   if (pl.loadingFor !== sig) return;
   pl.ready = true;
   const noImg = scenes.filter((s, i) => !pl.images[i]).length;

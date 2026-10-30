@@ -156,6 +156,9 @@ main { max-width: 1180px; margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }
 .sr-del { font: inherit; font-size: .8rem; background: none; border: 0; color: var(--danger); cursor: pointer; padding: .2em 0; text-decoration: underline; }
 .style-box .row { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .6rem; }
 
+/* 字幕の同期 */
+.capsync { margin-bottom: 1.2rem; }
+
 /* 朗読の取り込み */
 .narr { margin-bottom: 1.2rem; }
 .modes { display: flex; flex-wrap: wrap; gap: .3rem 1.4rem; margin: .3rem 0 .6rem; }
