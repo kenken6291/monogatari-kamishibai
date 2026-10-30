@@ -475,6 +475,8 @@ function initEditor() {
   }));
   $('#voiceSelect').addEventListener('change', () => scheduleSave({ voice: $('#voiceSelect').value }));
   $('#subToggle').addEventListener('change', () => scheduleSave({ subtitles: $('#subToggle').checked }));
+  $('#capOffset').value = String(capOffset());
+  $('#capOffset').addEventListener('change', () => localStorage.setItem('mk_cap_offset', $('#capOffset').value));
   $('#addCharBtn').addEventListener('click', () => {
     state.project.characters = state.project.characters || [];
     state.project.characters.push({ id: Math.random().toString(36).slice(2, 10), name: '', features: '', refFileId: null });
@@ -1059,14 +1061,133 @@ const pl = {
 
 function ease(x) { return x < .5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2; }
 
-function buildCaptions(text, maxLen) {
-  const sents = (text || '').replace(/\n/g, '').match(/[^。！？!?]+[。！？!?」』）)]*/g) || [];
-  const pieces = [];
-  sents.forEach(s => { for (let i = 0; i < s.length; i += maxLen) pieces.push(s.slice(i, i + maxLen)); });
-  const total = pieces.reduce((a, s) => a + s.length, 0) || 1;
-  let acc = 0;
-  return pieces.map(s => { const from = acc / total; acc += s.length; return { text: s, from, to: acc / total }; });
+/* ---------- 字幕と音声の同期 ----------
+   朗読の「間（無音）」を検出し、文の切れ目を実際の間に合わせる。
+   文字数の比率で見込んだ位置の近くにある間を選び、選んだ位置を基準に次の見込みを立て直すので、
+   読む速さが場面の途中で変わってもずれが積み重ならない。 */
+const ENV_HOP = 0.02; // 音量の包絡線を20ミリ秒ごとに計算
+
+function capSegments(text, maxLen) {
+  const t = (text || '').replace(/［＃[^］]*］/g, '').replace(/《[^》]*》/g, '').replace(/[｜|]/g, '');
+  const sents = t.split('\n').flatMap(line => line.match(/[^。！？!?]+[。！？!?」』）)]*/g) || []).map(s => s.trim()).filter(Boolean);
+  const out = [];
+  sents.forEach(s => {
+    let rest = s, first = true;
+    while (rest.length > maxLen) {
+      // 長い文は読点で区切る（読点のところには短い間があることが多い）
+      let cut = rest.lastIndexOf('、', maxLen - 1);
+      // 読点がなければ均等に割り、最後に数文字だけ残る字幕を作らない
+      if (cut < Math.floor(maxLen * 0.4)) cut = rest.length <= maxLen * 2 ? Math.ceil(rest.length / 2) - 1 : maxLen - 1;
+      out.push({ text: rest.slice(0, cut + 1), major: first });
+      rest = rest.slice(cut + 1);
+      first = false;
+    }
+    if (rest) out.push({ text: rest, major: first });
+  });
+  return out;
 }
+
+function envelope(data, rate) {
+  const step = Math.max(1, Math.floor(rate * ENV_HOP));
+  const n = Math.floor(data.length / step);
+  const env = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0, c = 0;
+    const o = i * step;
+    for (let k = 0; k < step; k += 4) { const v = data[o + k]; s += v * v; c++; }
+    env[i] = Math.sqrt(s / c);
+  }
+  return env;
+}
+
+function percentile(env, a, b, q) {
+  const arr = [];
+  const stride = Math.max(1, Math.floor((b - a) / 4000));
+  for (let i = a; i < b; i += stride) arr.push(env[i]);
+  if (!arr.length) return 0;
+  arr.sort((x, y) => x - y);
+  return arr[Math.min(arr.length - 1, Math.floor(arr.length * q))];
+}
+
+function alignCaps(segs, env, t0, t1) {
+  if (!segs.length) return [];
+  const total = segs.reduce((a, s) => a + s.text.length, 0) || 1;
+  const cum = [0];
+  segs.forEach((s, k) => { cum[k + 1] = cum[k] + s.text.length; });
+  let s0 = t0, s1 = t1, gaps = [];
+  if (env && env.length) {
+    const a = Math.max(0, Math.floor(t0 / ENV_HOP)), b = Math.min(env.length, Math.ceil(t1 / ENV_HOP));
+    if (b - a > 10) {
+      const floor = percentile(env, a, b, 0.1), loud = percentile(env, a, b, 0.9);
+      const thr = floor + (loud - floor) * 0.12;
+      // 話し始めと話し終わり
+      let i = a; while (i < b && env[i] < thr) i++;
+      let j = b - 1; while (j > i && env[j] < thr) j--;
+      if (j > i) { s0 = i * ENV_HOP; s1 = (j + 1) * ENV_HOP; }
+      // 間（無音区間）。字幕は次の声が出る少し前に切り替える
+      let run = -1;
+      for (let k = i; k <= j; k++) {
+        if (env[k] < thr) { if (run < 0) run = k; }
+        else if (run >= 0) {
+          const len = (k - run) * ENV_HOP;
+          if (len >= 0.1) gaps.push({ t: k * ENV_HOP - 0.08, len });
+          run = -1;
+        }
+      }
+    }
+  }
+  const starts = [s0];
+  let last = s0, anchorC = 0;
+  for (let k = 1; k < segs.length; k++) {
+    const span = total - anchorC || 1;
+    const exp = last + (cum[k] - anchorC) / span * (s1 - last);
+    const segDur = segs[k - 1].text.length / span * (s1 - last);
+    const win = Math.max(1.0, segDur * 0.6);
+    const minLen = segs[k].major ? 0.16 : 0.1;
+    let best = null, bestScore = -Infinity;
+    gaps.forEach(g => {
+      if (g.t <= starts[k - 1] + 0.3 || g.len < minLen) return;
+      const d = Math.abs(g.t - exp);
+      if (d > win) return;
+      const score = Math.min(g.len, 1) * (segs[k].major ? 2 : 1) - d / win;
+      if (score > bestScore) { bestScore = score; best = g; }
+    });
+    if (best) { starts.push(best.t); last = best.t; anchorC = cum[k]; }
+    else starts.push(Math.max(exp, starts[k - 1] + 0.3));
+  }
+  return segs.map((s, k) => ({ text: s.text, from: starts[k] - t0, to: (k + 1 < segs.length ? starts[k + 1] : t1) - t0 }));
+}
+
+let narrEnvCache = { id: null, env: null };
+async function narrationEnvelope() {
+  const n = state.project.narration;
+  if (narrEnvCache.id === n.uploadId) return narrEnvCache.env;
+  const nc = await narrationBlob();
+  const rate = 8000; // 間の検出には低いサンプルレートで十分（メモリ節約）
+  const ctx = new OfflineAudioContext(1, Math.ceil(n.duration * rate) + rate, rate);
+  const buf = await ctx.decodeAudioData(await nc.blob.arrayBuffer());
+  const env = envelope(buf.getChannelData(0), buf.sampleRate);
+  narrEnvCache = { id: n.uploadId, env };
+  return env;
+}
+
+async function buildAllCaptions(mode, maxLen) {
+  const scenes = state.project.scenes;
+  const segs = scenes.map(s => capSegments(s.text, maxLen));
+  if (mode === 'narration') {
+    let env = null;
+    try { env = await narrationEnvelope(); } catch (e) { console.warn('朗読の解析に失敗したため文字数で割り振ります', e); }
+    const times = sceneTimes();
+    return scenes.map((s, i) => alignCaps(segs[i], env, times[i].from, times[i].from + times[i].dur));
+  }
+  return scenes.map((s, i) => {
+    const b = pl.buffers[i];
+    const dur = b ? b.duration : Math.max(3, (s.text || '').length / CHARS_PER_SEC);
+    return alignCaps(segs[i], b ? envelope(b.getChannelData(0), b.sampleRate) : null, 0, dur);
+  });
+}
+
+function capOffset() { return Number(localStorage.getItem('mk_cap_offset') || 0); }
 
 async function preparePlayer() {
   const p = state.project;
@@ -1078,7 +1199,7 @@ async function preparePlayer() {
   renderCueList();
   if (!scenes.length) { $('#prepStatus').textContent = '場面がありません'; drawCard('場面がまだありません'); return; }
   const mode = audioMode();
-  const sig = p.id + ':' + mode + ':' + (mode === 'narration' ? p.narration.uploadId : '') + ':' + scenes.map(s => (s.imageFileId || '') + (s.audioFileId || '')).join('|');
+  const sig = p.id + ':' + mode + ':' + (mode === 'narration' ? p.narration.uploadId + '@' + p.narration.starts.join(',') : '') + ':' + scenes.map(s => (s.imageFileId || '') + (s.audioFileId || '')).join('|');
   if (pl.ready && pl.loadingFor === sig) { $('#prepStatus').textContent = '準備できています'; return; }
   pl.ready = false; pl.loadingFor = sig;
   if (!pl.ctx) pl.ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1086,7 +1207,6 @@ async function preparePlayer() {
   drawCard(p.title || 'ものがたり紙芝居');
   pl.images = []; pl.buffers = [];
   const capLen = W > H ? 34 : 18;
-  pl.caps = scenes.map(s => buildCaptions(s.text, capLen));
   let done = 0;
   const total = scenes.length;
   const status = () => { $('#prepStatus').textContent = `素材を読み込み中… ${done}/${total}`; };
@@ -1133,6 +1253,9 @@ async function preparePlayer() {
     }
     if (pl.loadingFor !== sig) return;
   }
+  $('#prepStatus').textContent = '字幕を朗読の間に合わせています…';
+  pl.caps = await buildAllCaptions(mode, capLen);
+  if (pl.loadingFor !== sig) return;
   pl.ready = true;
   const noImg = scenes.filter((s, i) => !pl.images[i]).length;
   const noAud = mode === 'narration' ? 0 : scenes.filter((s, i) => !pl.buffers[i]).length;
@@ -1214,9 +1337,12 @@ function drawScene(i, p, elapsed, alpha) {
   g.restore();
 }
 
-function drawCaption(i, p) {
+function drawCaption(i, el) {
   if (!$('#subToggle').checked) return;
-  const cap = (pl.caps[i] || []).find(c => p >= c.from && p < c.to) || (pl.caps[i] || []).slice(-1)[0];
+  const caps = pl.caps[i] || [];
+  if (!caps.length) return;
+  const t = el + capOffset();
+  const cap = t < caps[0].from ? caps[0] : (caps.find(c => t >= c.from && t < c.to) || caps[caps.length - 1]);
   if (!cap) return;
   const { g, cv } = pl;
   const W = cv.width, H = cv.height;
@@ -1261,7 +1387,7 @@ function frame() {
   } else {
     drawScene(pl.idx, p, el, 1);
   }
-  drawCaption(pl.idx, p);
+  drawCaption(pl.idx, el);
   pl.raf = requestAnimationFrame(frame);
 }
 

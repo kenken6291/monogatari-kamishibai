@@ -234,6 +234,15 @@
             <button class="btn primary wide" id="fsBtn">全画面で上演</button>
             <p class="note keys">キー操作：スペース＝再生／一時停止、←→＝前後の場面、F＝全画面</p>
             <label class="check"><input type="checkbox" id="subToggle" checked> 字幕を表示</label>
+            <label class="inline cap-adj">字幕のタイミング
+              <select id="capOffset">
+                <option value="0.6">早める（0.6秒）</option>
+                <option value="0.3">少し早める（0.3秒）</option>
+                <option value="0">標準</option>
+                <option value="-0.3">少し遅らせる（0.3秒）</option>
+                <option value="-0.6">遅らせる（0.6秒）</option>
+              </select>
+            </label>
             <button class="btn ghost wide" id="recordBtn">動画として書き出す（WebM）</button>
             <p class="note" id="prepStatus"></p>
             <ol id="cueList" class="cue-list"></ol>
