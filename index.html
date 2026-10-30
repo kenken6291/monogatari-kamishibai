@@ -214,7 +214,15 @@
         <div class="theater">
           <div class="butai">
             <div class="butai-top" id="butaiTitle"></div>
-            <div class="butai-window"><canvas id="stageCanvas" width="1280" height="720"></canvas></div>
+            <div class="butai-window" id="stageWrap">
+              <canvas id="stageCanvas" width="1280" height="720"></canvas>
+              <div class="fs-bar" id="fsBar">
+                <button type="button" id="fsPrev">◀ 前の場面</button>
+                <button type="button" id="fsPlay">一時停止</button>
+                <button type="button" id="fsNext">次の場面 ▶</button>
+                <button type="button" id="fsExit">全画面を閉じる</button>
+              </div>
+            </div>
             <div class="butai-legs"><span></span><span></span></div>
           </div>
           <aside class="cue">
@@ -223,6 +231,8 @@
               <button class="btn ghost" id="pauseBtn" disabled>一時停止</button>
               <button class="btn ghost" id="stopPlayBtn" disabled>最初に戻る</button>
             </div>
+            <button class="btn primary wide" id="fsBtn">全画面で上演</button>
+            <p class="note keys">キー操作：スペース＝再生／一時停止、←→＝前後の場面、F＝全画面</p>
             <label class="check"><input type="checkbox" id="subToggle" checked> 字幕を表示</label>
             <button class="btn ghost wide" id="recordBtn">動画として書き出す（WebM）</button>
             <p class="note" id="prepStatus"></p>
@@ -246,6 +256,7 @@
     <li><b>絵と朗読を生成する</b>　「場面と生成」で一括生成します。気に入らない場面は個別に作り直せます。Google Earth Studioで書き出した風景を「背景参考」に入れると、その景色を元に描きます。</li>
     <li><b>朗読がすでにある場合</b>　「場面と生成」の「朗読ファイルを取り込む」で作品まるごとの音声を入れ、「AIで場面に合わせる」か「聞きながら区切る」で、絵の切り替え位置を合わせます。場面ごとに分かれた音声なら、対応表の「朗読を取り込む」で1つずつ入れられます。</li>
     <li><b>上演する</b>　朗読に合わせて絵が切り替わり、ゆっくりパン・ズーム・スライドします。</li>
+    <li><b>全画面で見せる</b>　「全画面で上演」で画面いっぱいに映します。スペースで一時停止、←→で場面を移動、Escで元に戻ります。</li>
     <li><b>書き出す</b>　「動画として書き出す」で、上演をそのまま動画ファイルに保存できます。</li>
   </ol>
   <p class="note">絵1枚と朗読1場面の生成には、それぞれ数十秒かかります。止めてもそれまでの結果は保存されます。</p>

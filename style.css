@@ -196,6 +196,33 @@ label.inline select { width: auto; margin: 0; }
 .cue-list li b { font-family: var(--display); font-weight: 400; min-width: 1.8em; }
 .cue-list li.now { background: #fbf3dc; }
 
+/* 全画面上演 */
+.butai-window { position: relative; }
+.fs-bar { display: none; }
+#stageWrap:fullscreen, #stageWrap.pseudo-fs {
+  border: 0; border-image: none; box-shadow: none; background: #000;
+  width: 100vw; height: 100vh; display: grid; place-items: center;
+}
+#stageWrap.pseudo-fs { position: fixed; inset: 0; z-index: 100; height: 100dvh; }
+#stageWrap:fullscreen canvas, #stageWrap.pseudo-fs canvas {
+  width: 100vw; height: 100vh; max-width: none; max-height: none; object-fit: contain;
+}
+#stageWrap.pseudo-fs canvas { height: 100dvh; }
+#stageWrap:fullscreen .fs-bar, #stageWrap.pseudo-fs .fs-bar {
+  display: flex; gap: .5rem; flex-wrap: wrap; justify-content: center;
+  position: absolute; left: 50%; bottom: calc(1.2rem + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+  background: rgba(20, 18, 15, .72); padding: .5rem .7rem; border-radius: 8px; transition: opacity .3s;
+}
+.fs-bar button {
+  font: inherit; font-weight: 700; color: #fff; background: transparent; border: 1.5px solid rgba(255,255,255,.6);
+  border-radius: 6px; padding: .45em .9em; cursor: pointer;
+}
+.fs-bar button:hover { background: rgba(255,255,255,.15); }
+.fs-bar button:disabled { opacity: .4; cursor: not-allowed; }
+#stageWrap.idle .fs-bar { opacity: 0; pointer-events: none; }
+#stageWrap.idle { cursor: none; }
+.keys { font-size: .8rem; }
+
 /* モーダル */
 .modal { border: 2px solid var(--ink); border-radius: 4px; padding: 1.6rem; width: min(560px, 92vw); box-shadow: 8px 8px 0 var(--wood); }
 .modal.wide { width: min(760px, 94vw); }

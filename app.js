@@ -345,7 +345,7 @@ function loadEditor(p, step) {
 }
 
 function goStep(n) {
-  if (state.step === 4 && n !== 4) stopPlayback(false);
+  if (state.step === 4 && n !== 4) { if (isFs()) exitFs(); stopPlayback(false); }
   state.step = n;
   $$('.step-tab').forEach(b => {
     const on = Number(b.dataset.step) === n;
@@ -1342,19 +1342,16 @@ function setControls() {
   $('#recordBtn').textContent = rec ? '書き出しを中止' : '動画として書き出す（WebM）';
   $('#recordBtn').classList.toggle('rec', rec);
   $('#pauseBtn').disabled = !pl.playing || rec;
+  $('#fsPlay').textContent = !pl.playing ? '最初から上演' : pl.paused ? '再開' : '一時停止';
+  $('#fsPlay').disabled = rec;
+  $('#fsPrev').disabled = $('#fsNext').disabled = rec || !pl.playing;
+  wakeFsBar();
 }
 
 function initPlayer() {
   $('#playBtn').addEventListener('click', () => playFrom(0));
-  $('#pauseBtn').addEventListener('click', async () => {
-    if (!pl.playing) return;
-    if (pl.mode === 'narration') {
-      if (pl.paused) { await pl.narrEl.play(); pl.paused = false; }
-      else { pl.narrEl.pause(); pl.paused = true; }
-    } else if (pl.paused) { await pl.ctx.resume(); pl.paused = false; }
-    else { await pl.ctx.suspend(); pl.paused = true; }
-    setControls();
-  });
+  $('#pauseBtn').addEventListener('click', togglePause);
+  initFullscreen();
   $('#stopPlayBtn').addEventListener('click', () => {
     stopPlayback(false);
     drawCard(state.project.title || '');
@@ -1366,6 +1363,107 @@ function initPlayer() {
   });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && pl.rec && pl.rec.state === 'recording') toast('書き出し中は、このタブを表示したままにしてください', true);
+  });
+}
+
+async function togglePause() {
+  if (!pl.playing) return;
+  if (pl.rec && pl.rec.state === 'recording') return;
+  if (pl.mode === 'narration') {
+    if (pl.paused) { await pl.narrEl.play(); pl.paused = false; }
+    else { pl.narrEl.pause(); pl.paused = true; }
+  } else if (pl.paused) { await pl.ctx.resume(); pl.paused = false; }
+  else { await pl.ctx.suspend(); pl.paused = true; }
+  setControls();
+}
+
+/* ---------- 全画面上演 ---------- */
+function stageWrap() { return $('#stageWrap'); }
+function isFs() {
+  const w = stageWrap();
+  return document.fullscreenElement === w || document.webkitFullscreenElement === w || w.classList.contains('pseudo-fs');
+}
+
+async function enterFs() {
+  const w = stageWrap();
+  try {
+    if (w.requestFullscreen) await w.requestFullscreen({ navigationUI: 'hide' });
+    else if (w.webkitRequestFullscreen) w.webkitRequestFullscreen();
+    else throw new Error('no-api');
+  } catch (e) {
+    // iPhone など要素の全画面に未対応のブラウザは、画面いっぱいに広げて代用
+    w.classList.add('pseudo-fs');
+    document.body.style.overflow = 'hidden';
+  }
+  try {
+    const want = state.project.aspect === '9:16' ? 'portrait' : 'landscape';
+    if (screen.orientation && screen.orientation.lock) screen.orientation.lock(want).catch(() => {});
+  } catch (e) { }
+  updateFsUi();
+}
+
+function exitFs() {
+  const w = stageWrap();
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if (document.webkitFullscreenElement) document.webkitExitFullscreen();
+  w.classList.remove('pseudo-fs');
+  document.body.style.overflow = '';
+  try { screen.orientation && screen.orientation.unlock && screen.orientation.unlock(); } catch (e) { }
+  updateFsUi();
+}
+
+let fsIdleTimer;
+function wakeFsBar() {
+  const w = stageWrap();
+  w.classList.remove('idle');
+  clearTimeout(fsIdleTimer);
+  if (isFs() && pl.playing && !pl.paused) fsIdleTimer = setTimeout(() => w.classList.add('idle'), 2500);
+}
+
+function updateFsUi() {
+  const fs = isFs();
+  $('#fsBtn').textContent = fs ? '全画面を閉じる' : '全画面で上演';
+  if (!fs) { stageWrap().classList.remove('idle'); clearTimeout(fsIdleTimer); }
+  else wakeFsBar();
+}
+
+function stepScene(d) {
+  if (!pl.ready || (pl.rec && pl.rec.state === 'recording')) return;
+  const n = (state.project.scenes || []).length;
+  const i = Math.min(n - 1, Math.max(0, (pl.playing ? pl.idx : (pl.idx || 0)) + d));
+  playFrom(i);
+}
+
+async function playPauseKey() {
+  if (!pl.ready) return;
+  if (!pl.playing) await playFrom(0);
+  else await togglePause();
+  wakeFsBar();
+}
+
+function initFullscreen() {
+  const w = stageWrap();
+  $('#fsBtn').addEventListener('click', async () => {
+    if (isFs()) { exitFs(); return; }
+    if (!pl.ready) { toast('素材の読み込みが終わるまでお待ちください', true); return; }
+    await enterFs();
+    if (!pl.playing) playFrom(0);
+  });
+  $('#fsExit').addEventListener('click', exitFs);
+  $('#fsPlay').addEventListener('click', playPauseKey);
+  $('#fsPrev').addEventListener('click', () => { stepScene(-1); wakeFsBar(); });
+  $('#fsNext').addEventListener('click', () => { stepScene(1); wakeFsBar(); });
+  ['mousemove', 'touchstart', 'click'].forEach(ev => w.addEventListener(ev, wakeFsBar, { passive: true }));
+  document.addEventListener('fullscreenchange', updateFsUi);
+  document.addEventListener('webkitfullscreenchange', updateFsUi);
+  document.addEventListener('keydown', e => {
+    if (state.step !== 4 || $('#editView').hidden || document.querySelector('dialog[open]')) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+    if (e.code === 'Space') { e.preventDefault(); playPauseKey(); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); stepScene(1); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); stepScene(-1); }
+    else if (e.key === 'f' || e.key === 'F') { e.preventDefault(); isFs() ? exitFs() : $('#fsBtn').click(); }
+    else if (e.key === 'Escape' && stageWrap().classList.contains('pseudo-fs')) exitFs();
   });
 }
 
