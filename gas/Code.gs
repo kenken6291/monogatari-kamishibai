@@ -3,7 +3,7 @@
  * 小説 → 場面分割 → 漫画風静止画 → 朗読音声（Gemini TTS）
  * 保存先：Google Drive（作品ごとにフォルダ / project.json）＋会員はスプレッドシート
  */
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.2.0';
 const SP = PropertiesService.getScriptProperties();
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const USER_COLS = ['email', 'name', 'salt', 'hash', 'mustChange', 'createdAt', 'agreedAt', 'lastLogin', 'failCount', 'lockedUntil'];
@@ -67,7 +67,9 @@ const HANDLERS = {
   ping: () => ({ version: APP_VERSION }),
   register, login, logout, me, changePassword, resetPassword,
   listProjects, getProject, saveProject, deleteProject,
-  analyze, uploadFile, generateImage, generateCharacterSheet, generateTTS, getAsset
+  analyze, uploadFile, generateImage, generateCharacterSheet, generateTTS, getAsset,
+  uploadSceneAudio, narrationPart, narrationCommit, deleteNarration, alignNarration,
+  removeStyleRef, analyzeStyle
 };
 
 /* ========== 会員 ========== */
@@ -265,7 +267,8 @@ function saveProject(req, u) {
   const inP = req.project || {};
   if (inP.text && inP.text.length > 60000) throw new Error('本文が長すぎます（6万字まで）');
   if (inP.aspect && ASPECTS.indexOf(inP.aspect) < 0) throw new Error('画像サイズの指定が不正です');
-  const keys = ['title', 'text', 'aspect', 'style', 'voice', 'characters', 'scenes', 'subtitles'];
+  if (inP.audioMode && ['scenes', 'narration'].indexOf(inP.audioMode) < 0) throw new Error('音声の種類が不正です');
+  const keys = ['title', 'text', 'aspect', 'style', 'voice', 'characters', 'scenes', 'subtitles', 'audioMode', 'narrationStarts', 'styleRefAttach'];
   if (!inP.id) {
     const id = Utilities.getUuid().slice(0, 8) + Date.now().toString(36);
     const folder = userFolder(u).createFolder('p_' + id);
@@ -291,6 +294,11 @@ function saveProject(req, u) {
           id: String(c.id), name: String(c.name || ''), features: String(c.features || ''),
           refFileId: old[c.id] ? old[c.id].refFileId : null
         }));
+      } else if (k === 'narrationStarts') {
+        const st = inP.narrationStarts;
+        if (!p.narration || !Array.isArray(st) || st.length !== (p.scenes || []).length) return;
+        p.narration.starts = st.map(Number);
+        p.narration.aligned = 'manual';
       } else p[k] = inP[k];
     });
   });
@@ -428,6 +436,7 @@ function analyze(req, u) {
       });
       pp.scenes = scenes;
       pp.paraCount = paras.length;
+      if (pp.narration) { pp.narration.starts = ratioStarts(scenes, pp.narration.duration); pp.narration.aligned = 'ratio'; }
       pp.characters = pp.characters || [];
       (out.cast || []).forEach(c => {
         if (!pp.characters.some(x => x.name === c.name)) {
@@ -452,6 +461,10 @@ function uploadFile(req, u) {
         const c = (p.characters || []).filter(x => x.id === req.charId)[0];
         if (!c) throw new Error('人物が見つかりません');
         c.refFileId = id;
+      } else if (req.kind === 'styleRef') {
+        p.styleRefs = p.styleRefs || [];
+        if (p.styleRefs.length >= 3) { DriveApp.getFileById(id).setTrashed(true); throw new Error('参考絵は3枚までです'); }
+        p.styleRefs.push(id);
       } else if (req.kind === 'bgRef') {
         const s = p.scenes[req.sceneIdx];
         if (!s) throw new Error('場面が見つかりません');
@@ -468,13 +481,15 @@ function generateCharacterSheet(req, u) {
   const c = (p.characters || []).filter(x => x.id === req.charId)[0];
   if (!c) throw new Error('人物が見つかりません');
   const parts = [];
+  const sNotes = styleRefParts(p, parts);
   if (c.refFileId) parts.push(blobPart(c.refFileId));
   parts.push({
     text: [
       'キャラクター設定画（三面図）を1枚に描いてください。左から正面・横向き・後ろ姿の全身を同じ大きさで並べる。',
       '画風：' + (p.style || '日本の漫画風、くっきりした線画とやわらかい彩色'),
       '人物：' + c.name + '（' + c.features + '）',
-      c.refFileId ? '添付画像の人物の顔立ち・髪型・服装を忠実に引き継ぐこと。' : '',
+      sNotes.join('\n'),
+      c.refFileId ? parts.length + '枚目の画像の人物の顔立ち・髪型・服装を忠実に引き継ぐこと。' : '',
       '背景は無地の白。文字・名前・注釈は入れない。'
     ].join('\n')
   });
@@ -493,7 +508,8 @@ function generateImage(req, u) {
   const idx = Number(req.sceneIdx);
   const s = p.scenes[idx];
   if (!s) throw new Error('場面が見つかりません');
-  const parts = [], notes = [];
+  const parts = [];
+  const notes = styleRefParts(p, parts);
   const chars = (p.characters || []).filter(c => (s.characters || []).indexOf(c.name) >= 0);
   chars.slice(0, 3).forEach(c => {
     if (!c.refFileId) return;
@@ -623,4 +639,233 @@ function getAsset(req, u) {
   if (!ok) throw new Error('このファイルにはアクセスできません');
   const b = f.getBlob();
   return { mimeType: b.getContentType(), data: Utilities.base64Encode(b.getBytes()) };
+}
+
+/* ========== 既存の朗読音声の取り込み ========== */
+const AUDIO_MIME = /^(audio\/|video\/(mp4|webm))/;
+
+// 場面ごとの音声ファイル
+function uploadSceneAudio(req, u) {
+  const m = /^data:([\w\/+.-]+);base64,(.+)$/.exec(String(req.dataUrl || ''));
+  if (!m || !AUDIO_MIME.test(m[1])) throw new Error('音声ファイルを選んでください');
+  if (m[2].length > 28 * 1024 * 1024) throw new Error('1場面の音声は20MBまでです。長い朗読は「朗読ファイルを取り込む」を使ってください');
+  const dur = Number(req.duration);
+  if (!(dur > 0)) throw new Error('音声の長さを読み取れませんでした');
+  const idx = Number(req.sceneIdx);
+  let scene;
+  withProject(u, req.projectId, (p, folder) => {
+    const s = p.scenes[idx];
+    if (!s) throw new Error('場面が見つかりません');
+    const id = folder.createFile(Utilities.newBlob(Utilities.base64Decode(m[2]), m[1], 'voice_upload_' + idx + '_' + Date.now())).getId();
+    if (s.audioFileId) try { DriveApp.getFileById(s.audioFileId).setTrashed(true); } catch (e) { }
+    s.audioFileId = id;
+    s.duration = Math.round(dur * 100) / 100;
+    s.audioSource = 'upload';
+    scene = s;
+  });
+  return { scene: scene };
+}
+
+// 作品全体の朗読ファイル（4MBずつ分割して受け取る）
+function narrationPart(req, u) {
+  const folder = projectFolder(u, req.projectId);
+  if (!/^[a-z0-9]{6,20}$/.test(String(req.uploadId))) throw new Error('アップロードIDが不正です');
+  const bytes = Utilities.base64Decode(String(req.data || ''));
+  if (!bytes.length) throw new Error('空のデータです');
+  folder.createFile(Utilities.newBlob(bytes, 'application/octet-stream',
+    'narr_' + req.uploadId + '_' + ('0000' + Number(req.index)).slice(-4)));
+  return {};
+}
+
+function narrationFiles(folder, uploadId) {
+  const out = [];
+  const it = folder.searchFiles('title contains "narr_' + uploadId + '_"');
+  while (it.hasNext()) { const f = it.next(); out.push({ name: f.getName(), id: f.getId(), size: f.getSize() }); }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
+function trashNarration(n) {
+  (n && n.parts || []).forEach(id => { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { } });
+}
+
+function sceneLens(scenes) { return scenes.map(s => cleanForTTS(s.text).length || 1); }
+
+function ratioStarts(scenes, dur) {
+  const lens = sceneLens(scenes);
+  const tot = lens.reduce((a, b) => a + b, 0) || 1;
+  let acc = 0;
+  return lens.map(l => { const st = acc / tot * dur; acc += l; return Math.round(st * 10) / 10; });
+}
+
+// 確定した位置（null以外）を残し、間の場面を文字数の比率で埋める
+function fillStarts(fixed, scenes, dur) {
+  const lens = sceneLens(scenes);
+  const out = fixed.slice();
+  out[0] = 0;
+  let i = 1;
+  while (i < out.length) {
+    if (out[i] != null) { i++; continue; }
+    const a = i - 1;
+    let b = i;
+    while (b < out.length && out[b] == null) b++;
+    const t0 = out[a], t1 = b < out.length ? out[b] : dur;
+    const span = lens.slice(a, b).reduce((x, y) => x + y, 0);
+    let acc = lens[a];
+    for (let k = i; k < b; k++) { out[k] = t0 + (t1 - t0) * acc / span; acc += lens[k]; }
+    i = b;
+  }
+  return out.map(x => Math.round(x * 10) / 10);
+}
+
+function narrationCommit(req, u) {
+  const folder = projectFolder(u, req.projectId);
+  const files = narrationFiles(folder, req.uploadId);
+  if (files.length !== Number(req.total)) throw new Error('アップロードの一部が欠けました。もう一度取り込んでください');
+  const dur = Number(req.duration);
+  if (!(dur > 0)) throw new Error('音声の長さを読み取れませんでした');
+  return {
+    project: withProject(u, req.projectId, p => {
+      if (p.narration) trashNarration(p.narration);
+      p.narration = {
+        uploadId: req.uploadId, parts: files.map(f => f.id),
+        size: files.reduce((a, f) => a + f.size, 0),
+        mimeType: String(req.mimeType || 'audio/mpeg'), name: String(req.name || '').slice(0, 120),
+        duration: Math.round(dur * 100) / 100,
+        starts: ratioStarts(p.scenes || [], dur), aligned: 'ratio'
+      };
+      p.audioMode = 'narration';
+    })
+  };
+}
+
+function deleteNarration(req, u) {
+  return {
+    project: withProject(u, req.projectId, p => {
+      trashNarration(p.narration);
+      p.narration = null;
+      p.audioMode = 'scenes';
+    })
+  };
+}
+
+// Geminiに朗読を聞かせて、各場面の冒頭が読まれる時刻を推定
+function alignNarration(req, u) {
+  const folder = projectFolder(u, req.projectId);
+  const p = readProject(folder);
+  const n = p.narration;
+  if (!n) throw new Error('朗読ファイルが取り込まれていません');
+  if (!(p.scenes || []).length) throw new Error('先に場面を分けてください');
+  const key = prop('GEMINI_API_KEY', '');
+  if (!key) throw new Error('サーバーにGEMINI_API_KEYが設定されていません');
+  const API = 'https://generativelanguage.googleapis.com/';
+
+  // 1) Files API へ分割アップロード
+  const start = UrlFetchApp.fetch(API + 'upload/v1beta/files', {
+    method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+    headers: {
+      'x-goog-api-key': key, 'X-Goog-Upload-Protocol': 'resumable', 'X-Goog-Upload-Command': 'start',
+      'X-Goog-Upload-Header-Content-Length': String(n.size), 'X-Goog-Upload-Header-Content-Type': n.mimeType
+    },
+    payload: JSON.stringify({ file: { display_name: 'narration_' + p.id } })
+  });
+  const hd = start.getAllHeaders();
+  let upUrl = '';
+  Object.keys(hd).forEach(k => { if (k.toLowerCase() === 'x-goog-upload-url') upUrl = hd[k]; });
+  if (!upUrl) throw new Error('音声をAIへ送れませんでした(' + start.getResponseCode() + ')');
+  let offset = 0, file = null;
+  n.parts.forEach((id, i) => {
+    const bytes = DriveApp.getFileById(id).getBlob().getBytes();
+    const last = i === n.parts.length - 1;
+    const r = UrlFetchApp.fetch(upUrl, {
+      method: 'post', contentType: 'application/octet-stream', muteHttpExceptions: true, payload: bytes,
+      headers: { 'X-Goog-Upload-Command': last ? 'upload, finalize' : 'upload', 'X-Goog-Upload-Offset': String(offset) }
+    });
+    if (r.getResponseCode() !== 200) throw new Error('音声の送信に失敗しました(' + r.getResponseCode() + ')');
+    offset += bytes.length;
+    if (last) file = JSON.parse(r.getContentText()).file;
+  });
+
+  try {
+    // 2) 処理完了を待つ
+    for (let k = 0; k < 40 && file.state !== 'ACTIVE'; k++) {
+      if (file.state === 'FAILED') throw new Error('AIが音声を処理できませんでした（MP3かWAVを推奨）');
+      Utilities.sleep(3000);
+      file = JSON.parse(UrlFetchApp.fetch(API + 'v1beta/' + file.name, { headers: { 'x-goog-api-key': key }, muteHttpExceptions: true }).getContentText());
+    }
+    if (file.state !== 'ACTIVE') throw new Error('音声の処理が時間内に終わりませんでした');
+
+    // 3) 場面の冒頭が読まれる時刻を聞く
+    const list = p.scenes.map((s, i) => '[' + i + '] ' + cleanForTTS(s.text).replace(/\s+/g, '').slice(0, 40)).join('\n');
+    const res = callGemini(model('text'), {
+      contents: [{
+        parts: [
+          { fileData: { mimeType: n.mimeType, fileUri: file.uri } },
+          { text: 'この音声は小説の朗読です。下の各場面について、その冒頭の文が読まれ始める時刻を、音声の先頭からの秒数（小数1桁）で答えてください。場面0は朗読の最初です。見つからない場面は -1 にしてください。\n' + list }
+        ]
+      }],
+      generationConfig: {
+        responseMimeType: 'application/json', temperature: 0,
+        responseSchema: { type: 'OBJECT', properties: { starts: { type: 'ARRAY', items: { type: 'OBJECT', properties: { i: { type: 'INTEGER' }, sec: { type: 'NUMBER' } }, required: ['i', 'sec'] } } }, required: ['starts'] }
+      }
+    });
+    const ai = JSON.parse(textOf(res)).starts || [];
+    const fixed = p.scenes.map(() => null);
+    ai.forEach(a => { if (a.i > 0 && a.i < fixed.length && a.sec > 0 && a.sec < n.duration) fixed[a.i] = Number(a.sec); });
+    // 前後が逆転している値は捨てる
+    let prev = 0;
+    for (let i = 1; i < fixed.length; i++) {
+      if (fixed[i] == null) continue;
+      if (fixed[i] <= prev + 0.5) fixed[i] = null; else prev = fixed[i];
+    }
+    const found = fixed.filter(x => x != null).length;
+    const starts = fillStarts(fixed, p.scenes, n.duration);
+    const pp = withProject(u, p.id, q => { q.narration.starts = starts; q.narration.aligned = 'ai'; });
+    return { project: pp, found: found + 1, total: p.scenes.length };
+  } finally {
+    try { UrlFetchApp.fetch(API + 'v1beta/' + file.name, { method: 'delete', headers: { 'x-goog-api-key': key }, muteHttpExceptions: true }); } catch (e) { }
+  }
+}
+
+/* ========== 作風（参考絵） ========== */
+// 参考絵を最大2枚、生成リクエストの先頭に添付する
+function styleRefParts(p, parts) {
+  const notes = [];
+  if (p.styleRefAttach === false) return notes;
+  (p.styleRefs || []).slice(0, 2).forEach(id => {
+    try {
+      parts.push(blobPart(id));
+      notes.push(parts.length + '枚目の画像は画風の参考。線・塗り・陰影・色づかいのタッチだけを真似し、描かれている人物・構図・内容は使わない。');
+    } catch (e) { }
+  });
+  return notes;
+}
+
+function removeStyleRef(req, u) {
+  return {
+    project: withProject(u, req.projectId, p => {
+      p.styleRefs = (p.styleRefs || []).filter(id => id !== req.fileId);
+      try { DriveApp.getFileById(req.fileId).setTrashed(true); } catch (e) { }
+    })
+  };
+}
+
+function analyzeStyle(req, u) {
+  const folder = projectFolder(u, req.projectId);
+  const p = readProject(folder);
+  const refs = p.styleRefs || [];
+  if (!refs.length) throw new Error('参考絵がありません');
+  const parts = refs.map(blobPart);
+  parts.push({
+    text: [
+      'これらの参考絵に共通する「作風」を、画像生成AIに渡す画風指示として日本語で書いてください。',
+      '次の観点を、実際に描き分けられる具体的な言葉で200〜320字にまとめる：',
+      '線（太さ・強弱・質感・主線の色）、彩色（ベタ塗り/グラデーション/水彩/トーン風など）、陰影の付け方、色調とよく使う色、',
+      '人物のデフォルメ度合い（頭身・目や顔の描き方）、背景の描き込み量、画面全体の質感や時代感・媒体感。',
+      '作品名・作家名・キャラクター名・描かれている具体的な内容は書かない。前置きや見出しは不要で、指示文だけを出力する。'
+    ].join('\n')
+  });
+  const text = textOf(callGemini(model('text'), { contents: [{ parts: parts }], generationConfig: { temperature: 0.3 } })).trim();
+  if (!text) throw new Error('作風を読み取れませんでした');
+  return { project: withProject(u, p.id, pp => { pp.style = text; }) };
 }

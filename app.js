@@ -333,8 +333,11 @@ function loadEditor(p, step) {
   updateCount();
   $$('input[name=aspect]').forEach(r => { r.checked = r.value === (p.aspect || '16:9'); });
   $('#styleInput').value = p.style || '';
+  $('#styleRefAttach').checked = p.styleRefAttach !== false;
+  renderStyleRefs();
   $('#voiceSelect').value = p.voice || 'Kore';
   $('#subToggle').checked = p.subtitles !== false;
+  $$('input[name=audioMode]').forEach(r => { r.checked = r.value === audioMode(); });
   $('#saveState').textContent = '';
   renderChars();
   renderScenes();
@@ -372,7 +375,7 @@ async function flushSave() {
     const j = await api('saveProject', { project: { id: state.project.id, ...f } });
     // 生成中の場面データを上書きしないよう、送った項目だけ反映
     // 場面・人物は画面で編集中のオブジェクトをそのまま使い続ける
-    Object.keys(f).forEach(k => { if (k !== 'scenes' && k !== 'characters') state.project[k] = j.project[k]; });
+    Object.keys(f).forEach(k => { if (!['scenes', 'characters', 'narrationStarts'].includes(k)) state.project[k] = j.project[k]; });
     state.project.updatedAt = j.project.updatedAt;
     $('#saveState').textContent = '保存済み';
   } catch (e) {
@@ -449,6 +452,27 @@ function initEditor() {
     scheduleSave({ aspect: r.value });
   }));
   $('#styleInput').addEventListener('input', () => scheduleSave({ style: $('#styleInput').value }));
+  $('#styleRefAttach').addEventListener('change', () => scheduleSave({ styleRefAttach: $('#styleRefAttach').checked }));
+  $('#styleRefAdd').addEventListener('click', withBusy($('#styleRefAdd'), async () => {
+    if ((state.project.styleRefs || []).length >= 3) throw new Error('参考絵は3枚までです。不要なものを外してください');
+    const f = await pickImage();
+    if (!f) return;
+    $('#styleRefAdd').textContent = 'アップロード中…';
+    await flushSave();
+    const j = await api('uploadFile', { projectId: state.project.id, kind: 'styleRef', dataUrl: await shrinkImage(f) });
+    state.project.styleRefs = j.project.styleRefs;
+    renderStyleRefs();
+  }));
+  $('#styleAnalyzeBtn').addEventListener('click', withBusy($('#styleAnalyzeBtn'), async () => {
+    if (!(state.project.styleRefs || []).length) throw new Error('先に参考絵を追加してください');
+    if ($('#styleInput').value.trim() && !confirm('いまの画風の文章を、参考絵から作った作風に置き換えますか？')) return;
+    $('#styleAnalyzeBtn').textContent = 'AIが絵を見ています…';
+    await flushSave();
+    const j = await api('analyzeStyle', { projectId: state.project.id });
+    state.project.style = j.project.style;
+    $('#styleInput').value = j.project.style;
+    toast('参考絵から作風を作りました。文章は自由に直せます');
+  }));
   $('#voiceSelect').addEventListener('change', () => scheduleSave({ voice: $('#voiceSelect').value }));
   $('#subToggle').addEventListener('change', () => scheduleSave({ subtitles: $('#subToggle').checked }));
   $('#addCharBtn').addEventListener('click', () => {
@@ -464,6 +488,50 @@ function initEditor() {
   $('#genImagesBtn').addEventListener('click', () => runBatch('image'));
   $('#genAudioBtn').addEventListener('click', () => runBatch('audio'));
   $('#stopBtn').addEventListener('click', () => { state.stop = true; $('#stopBtn').textContent = '止めています…'; });
+
+  // 朗読の取り込み
+  $$('input[name=audioMode]').forEach(r => r.addEventListener('change', () => {
+    if (r.value === 'narration' && !state.project.narration) {
+      toast('先に「朗読ファイルを取り込む」で音声を入れてください', true);
+      $$('input[name=audioMode]').forEach(x => { x.checked = x.value === 'scenes'; });
+      return;
+    }
+    state.project.audioMode = r.value;
+    scheduleSave({ audioMode: r.value });
+    renderScenes();
+  }));
+  $('#narrFile').addEventListener('change', async e => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (f) await importNarration(f);
+  });
+  $('#alignAiBtn').addEventListener('click', withBusy($('#alignAiBtn'), async () => {
+    $('#alignAiBtn').textContent = 'AIが朗読を聞いています…（数分）';
+    await flushSave();
+    const j = await api('alignNarration', { projectId: state.project.id });
+    state.project.narration = j.project.narration;
+    renderScenes();
+    toast(`${j.found}/${j.total}場面の位置をAIが見つけました。残りは文字数で割り振りました。上演で確かめて、ずれていれば「聞きながら区切る」で直せます`);
+  }));
+  $('#alignRatioBtn').addEventListener('click', async () => {
+    const n = state.project.narration;
+    if (!n) return;
+    if (!confirm('いまの区切りを捨てて、文字数の比率で割り振り直しますか？')) return;
+    n.starts = fillStarts(n.starts.map((x, i) => i === 0 ? 0 : null), n.duration);
+    n.aligned = 'ratio';
+    scheduleSave({ narrationStarts: n.starts });
+    renderScenes();
+  });
+  $('#narrDelBtn').addEventListener('click', withBusy($('#narrDelBtn'), async () => {
+    if (!confirm('取り込んだ朗読ファイルを外しますか？（Googleドライブのゴミ箱に移動します）')) return;
+    await flushSave();
+    const j = await api('deleteNarration', { projectId: state.project.id });
+    state.project.narration = null;
+    state.project.audioMode = 'scenes';
+    $$('input[name=audioMode]').forEach(x => { x.checked = x.value === 'scenes'; });
+    renderScenes();
+  }));
+  initTapAlign();
 
   // 場面モーダル
   $('#smCancel').addEventListener('click', () => $('#sceneModal').close());
@@ -498,10 +566,12 @@ function shrinkImage(file, max = 1600) {
   });
 }
 
-function pickImage() {
+function pickImage() { return pickFile('image/*'); }
+
+function pickFile(accept) {
   return new Promise(res => {
     const inp = document.createElement('input');
-    inp.type = 'file'; inp.accept = 'image/*';
+    inp.type = 'file'; inp.accept = accept;
     inp.onchange = () => res(inp.files[0] || null);
     inp.click();
   });
@@ -568,6 +638,57 @@ function renderChars() {
 /* ---------- 場面表・タイムライン ---------- */
 function sceneDur(s) { return s.duration || Math.max(3, (s.text || '').length / CHARS_PER_SEC); }
 
+function audioMode() {
+  const p = state.project;
+  return p && p.audioMode === 'narration' && p.narration ? 'narration' : 'scenes';
+}
+
+// 各場面の開始時刻・長さ（取り込んだ朗読ファイル使用時はその区切り）
+function sceneTimes() {
+  const p = state.project;
+  const sc = p?.scenes || [];
+  if (audioMode() === 'narration' && p.narration.starts?.length === sc.length) {
+    const st = p.narration.starts;
+    return sc.map((s, i) => {
+      const to = i + 1 < sc.length ? st[i + 1] : p.narration.duration;
+      return { from: st[i], dur: Math.max(0.1, to - st[i]), est: p.narration.aligned === 'ratio' };
+    });
+  }
+  let t = 0;
+  return sc.map(s => { const d = sceneDur(s); const r = { from: t, dur: d, est: !s.duration }; t += d; return r; });
+}
+
+// 確定した区切り（null以外）を残し、間を文字数の比率で埋める
+function fillStarts(fixed, dur) {
+  const lens = state.project.scenes.map(s => (s.text || '').length || 1);
+  const out = fixed.slice();
+  out[0] = 0;
+  let i = 1;
+  while (i < out.length) {
+    if (out[i] != null) { i++; continue; }
+    const a = i - 1;
+    let b = i;
+    while (b < out.length && out[b] == null) b++;
+    const t0 = out[a], t1 = b < out.length ? out[b] : dur;
+    const span = lens.slice(a, b).reduce((x, y) => x + y, 0);
+    let acc = lens[a];
+    for (let k = i; k < b; k++) { out[k] = t0 + (t1 - t0) * acc / span; acc += lens[k]; }
+    i = b;
+  }
+  return out.map(x => Math.round(x * 10) / 10);
+}
+
+function fmtBytes(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + 'MB' : Math.round(n / 1024) + 'KB'; }
+
+function renderNarrInfo() {
+  const n = state.project?.narration;
+  const has = !!n;
+  ['#alignAiBtn', '#tapAlignBtn', '#alignRatioBtn', '#narrDelBtn'].forEach(sel => { $(sel).disabled = !has || state.running; });
+  if (!has) { $('#narrInfo').textContent = '作品まるごとの朗読（MP3・WAV・M4Aなど）があれば取り込めます。場面ごとに分かれた音声は、対応表の「朗読を取り込む」から入れます。'; return; }
+  const how = { ratio: '文字数の比率で仮に割り振り中', ai: 'AIが推定した区切り', manual: '手で区切った位置' }[n.aligned] || '';
+  $('#narrInfo').textContent = `取り込み済み：${n.name}（${fmtTime(n.duration)}・${fmtBytes(n.size)}）／ 区切り：${how}`;
+}
+
 function renderScenes() {
   const p = state.project;
   const body = $('#sceneBody');
@@ -576,26 +697,28 @@ function renderScenes() {
     body.innerHTML = '<tr><td colspan="6" class="empty">まだ場面がありません。「本文」でAIに場面を分けてもらいましょう。</td></tr>';
     $('#timeline').innerHTML = '';
     $('#timelineNote').textContent = '';
+    renderNarrInfo();
     return;
   }
   const tcls = { '9:16': 'p916', '1:1': 'p11' }[p.aspect] || '';
-  let t = 0;
+  const times = sceneTimes();
+  const narr = audioMode() === 'narration';
   body.innerHTML = scenes.map((s, i) => {
-    const d = sceneDur(s), from = t;
-    t += d;
+    const { from, dur: d, est } = times[i];
     const busy = state.busyScenes.has(i);
     return `<tr data-i="${i}">
       <td class="no">${i + 1}</td>
-      <td class="tm">${fmtTime(from)}〜${fmtTime(from + d)}${s.duration ? '' : '<br><small>（目安）</small>'}</td>
+      <td class="tm">${fmtTime(from)}〜${fmtTime(from + d)}${est ? '<br><small>（目安）</small>' : ''}</td>
       <td><div class="thumb ${tcls}" data-fid="${esc(s.imageFileId || '')}">${s.imageFileId ? '…' : '未生成'}</div></td>
       <td><div class="sum">${esc(s.summary)}</div>
         <div class="tags">${esc(s.location || '')}${s.characters?.length ? '／' + esc(s.characters.join('、')) : ''}${s.bgRefFileId ? '／背景参考あり' : ''}</div>
         <div class="ex">${esc((s.text || '').slice(0, 120))}</div>
-        <div>${s.audioFileId ? '<span class="ok-mark">● 朗読あり</span>' : ''}</div></td>
+        <div>${narr ? '' : s.audioFileId ? `<span class="ok-mark">● 朗読あり（${s.audioSource === 'upload' ? '取り込み' : 'AI生成'}）</span>` : ''}</div></td>
       <td><select class="eff" aria-label="場面${i + 1}の動き">${Object.entries(EFFECTS).map(([k, v]) => `<option value="${k}" ${s.effect === k ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
       <td><div class="ops">${busy ? '<span class="busy">生成中…</span>' : `
         <button class="btn small ghost r-img">${s.imageFileId ? '絵を作り直す' : '絵を作る'}</button>
-        <button class="btn small ghost r-tts">${s.audioFileId ? '朗読を作り直す' : '朗読を作る'}</button>
+        ${narr ? '' : `<button class="btn small ghost r-tts">${s.audioFileId ? '朗読を作り直す' : '朗読を作る'}</button>
+        <button class="btn small ghost r-imp">朗読を取り込む</button>`}
         <button class="btn small ghost r-bg">背景参考を入れる</button>
         <button class="btn small ghost r-edit">描写を編集</button>`}</div></td>
     </tr>`;
@@ -609,6 +732,7 @@ function renderScenes() {
     on('.r-img', () => genOne('image', i));
     on('.r-tts', () => genOne('audio', i));
     on('.r-edit', () => openSceneModal(i));
+    on('.r-imp', () => importSceneAudio(i));
     on('.r-bg', async () => {
       const f = await pickImage();
       if (!f) return;
@@ -624,6 +748,7 @@ function renderScenes() {
   });
   loadThumbs(body);
   renderTimeline();
+  renderNarrInfo();
 }
 
 async function loadThumbs(root) {
@@ -642,8 +767,9 @@ async function loadThumbs(root) {
 function renderTimeline() {
   const scenes = state.project?.scenes || [];
   const tl = $('#timeline');
-  const total = scenes.reduce((a, s) => a + sceneDur(s), 0);
-  tl.innerHTML = scenes.map((s, i) => `<div class="tl-seg ${s.duration ? '' : 'est'}" data-i="${i}" data-fid="${esc(s.imageFileId || '')}" style="flex:${sceneDur(s).toFixed(2)}" title="場面${i + 1}：${esc(s.summary)}"><span>${i + 1}</span></div>`).join('');
+  const times = sceneTimes();
+  const total = times.reduce((a, t) => a + t.dur, 0);
+  tl.innerHTML = scenes.map((s, i) => `<div class="tl-seg ${times[i].est ? 'est' : ''}" data-i="${i}" data-fid="${esc(s.imageFileId || '')}" style="flex:${times[i].dur.toFixed(2)}" title="場面${i + 1}：${esc(s.summary)}"><span>${i + 1}</span></div>`).join('');
   $$('.tl-seg', tl).forEach(seg => {
     seg.addEventListener('click', () => {
       const i = Number(seg.dataset.i);
@@ -652,8 +778,12 @@ function renderTimeline() {
     });
     if (seg.dataset.fid) asset(seg.dataset.fid).then(a => { seg.style.backgroundImage = `url(${a.url})`; }).catch(() => {});
   });
-  const done = scenes.filter(s => s.duration).length;
-  $('#timelineNote').textContent = `全${scenes.length}場面・約${fmtTime(total)}（朗読生成済み ${done}/${scenes.length}）。斜線は朗読未生成で、文字数からの目安です。`;
+  if (audioMode() === 'narration') {
+    $('#timelineNote').textContent = `全${scenes.length}場面・${fmtTime(total)}（取り込んだ朗読ファイル）。` + (state.project.narration.aligned === 'ratio' ? '斜線は文字数の比率で仮に割り振った区切りです。' : '');
+  } else {
+    const done = scenes.filter(s => s.duration).length;
+    $('#timelineNote').textContent = `全${scenes.length}場面・約${fmtTime(total)}（朗読あり ${done}/${scenes.length}）。斜線は朗読がなく、文字数からの目安です。`;
+  }
 }
 
 function openSceneModal(i) {
@@ -666,6 +796,210 @@ function openSceneModal(i) {
   $('#smPrompt').value = s.imagePrompt || '';
   $('#smText').textContent = s.text || '';
   $('#sceneModal').showModal();
+}
+
+/* ---------- 作風の参考絵 ---------- */
+function renderStyleRefs() {
+  const ids = state.project?.styleRefs || [];
+  const box = $('#styleRefList');
+  box.innerHTML = ids.length
+    ? ids.map(id => `<figure class="sr" data-fid="${esc(id)}"><div class="sr-img">…</div><button class="sr-del" aria-label="この参考絵を外す">外す</button></figure>`).join('')
+    : '<p class="note">参考絵はまだありません。</p>';
+  $('#styleRefAdd').disabled = ids.length >= 3;
+  $('#styleAnalyzeBtn').disabled = !ids.length;
+  $$('.sr', box).forEach(fig => {
+    const id = fig.dataset.fid;
+    asset(id).then(a => { $('.sr-img', fig).innerHTML = `<img src="${a.url}" alt="作風の参考絵">`; }).catch(() => { $('.sr-img', fig).textContent = '読込失敗'; });
+    $('.sr-del', fig).addEventListener('click', withBusy($('.sr-del', fig), async () => {
+      const j = await api('removeStyleRef', { projectId: state.project.id, fileId: id });
+      state.project.styleRefs = j.project.styleRefs;
+      renderStyleRefs();
+    }));
+  });
+}
+
+/* ---------- 既存の朗読音声の取り込み ---------- */
+const NARR_CHUNK = 4 * 1024 * 1024; // GeminiのFiles APIの分割単位（256KBの倍数）に合わせる
+const AUDIO_ACCEPT = 'audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac';
+let narrCache = { id: null, blob: null, url: null };
+
+function audioMime(f) {
+  const ext = (f.name.split('.').pop() || '').toLowerCase();
+  const byExt = { mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', flac: 'audio/flac', webm: 'audio/webm' };
+  let t = f.type || byExt[ext] || 'audio/mpeg';
+  return { 'audio/x-m4a': 'audio/mp4', 'audio/mp3': 'audio/mpeg', 'audio/x-wav': 'audio/wav', 'audio/wave': 'audio/wav', 'audio/x-flac': 'audio/flac' }[t] || t;
+}
+
+function blobToBase64(blob) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(',')[1] || '');
+    r.onerror = () => rej(new Error('ファイルを読み込めませんでした'));
+    r.readAsDataURL(blob);
+  });
+}
+
+function audioDuration(blob) {
+  return new Promise(res => {
+    const a = new Audio();
+    const url = URL.createObjectURL(blob);
+    const done = d => { URL.revokeObjectURL(url); res(d || 0); };
+    a.preload = 'metadata';
+    a.onloadedmetadata = async () => {
+      if (isFinite(a.duration) && a.duration > 0) return done(a.duration);
+      try {
+        const ctx = new OfflineAudioContext(1, 1, 44100);
+        const b = await ctx.decodeAudioData(await blob.arrayBuffer());
+        done(b.duration);
+      } catch (e) { done(0); }
+    };
+    a.onerror = () => done(0);
+    a.src = url;
+  });
+}
+
+async function importSceneAudio(i) {
+  const f = await pickFile(AUDIO_ACCEPT);
+  if (!f) return;
+  if (f.size > 20 * 1024 * 1024) { toast('1場面の音声は20MBまでです。長い朗読は「朗読ファイルを取り込む」を使ってください', true); return; }
+  state.busyScenes.add(i);
+  renderScenes();
+  try {
+    const duration = await audioDuration(f);
+    if (!duration) throw new Error('このファイルの長さを読み取れませんでした（MP3・WAV・M4Aを推奨）');
+    await flushSave();
+    const dataUrl = 'data:' + audioMime(f) + ';base64,' + await blobToBase64(f);
+    const j = await api('uploadSceneAudio', { projectId: state.project.id, sceneIdx: i, duration, dataUrl });
+    state.project.scenes[i] = j.scene;
+    toast(`場面${i + 1}に朗読を取り込みました（${fmtTime(duration)}）`);
+  } catch (e) { toast(e.message, true); }
+  finally { state.busyScenes.delete(i); renderScenes(); }
+}
+
+async function retry(fn, times) {
+  for (let k = 0; ; k++) {
+    try { return await fn(); }
+    catch (e) { if (k >= times) throw e; await new Promise(r => setTimeout(r, 2000 * (k + 1))); }
+  }
+}
+
+async function importNarration(f) {
+  if (state.running) return;
+  if (f.size > 300 * 1024 * 1024) { toast('朗読ファイルは300MBまでです', true); return; }
+  if (state.project.narration && !confirm('取り込み済みの朗読ファイルを置き換えますか？')) return;
+  const duration = await audioDuration(f);
+  if (!duration) { toast('このファイルの長さを読み取れませんでした（MP3・WAV・M4Aを推奨）', true); return; }
+  state.running = true; state.stop = false;
+  $('#genImagesBtn').disabled = $('#genAudioBtn').disabled = true;
+  renderNarrInfo();
+  $('#stopBtn').hidden = false; $('#stopBtn').textContent = '止める';
+  $('#progressWrap').hidden = false;
+  try {
+    await flushSave();
+    const uploadId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const total = Math.ceil(f.size / NARR_CHUNK);
+    for (let i = 0; i < total; i++) {
+      if (state.stop) throw new Error('取り込みを止めました');
+      $('#progressBar').style.width = (i / total * 100) + '%';
+      $('#progressText').textContent = `朗読ファイルを送信中… ${i + 1}/${total}（${fmtBytes(f.size)}）`;
+      const data = await blobToBase64(f.slice(i * NARR_CHUNK, (i + 1) * NARR_CHUNK));
+      await retry(() => api('narrationPart', { projectId: state.project.id, uploadId, index: i, total, data }), 2);
+    }
+    $('#progressText').textContent = '仕上げ中…';
+    const j = await api('narrationCommit', { projectId: state.project.id, uploadId, total, mimeType: audioMime(f), name: f.name, duration });
+    state.project.narration = j.project.narration;
+    state.project.audioMode = 'narration';
+    $$('input[name=audioMode]').forEach(x => { x.checked = x.value === 'narration'; });
+    $('#progressBar').style.width = '100%';
+    $('#progressText').textContent = `取り込み完了：${f.name}（${fmtTime(duration)}）`;
+    toast(state.project.scenes?.length
+      ? '取り込みました。いまは文字数で仮に区切っています。「AIで場面に合わせる」か「聞きながら区切る」で合わせてください'
+      : '取り込みました。本文を場面に分けると、区切りを合わせられます');
+  } catch (e) {
+    $('#progressText').textContent = '取り込みを中断しました';
+    toast(e.message, true);
+  } finally {
+    state.running = false;
+    $('#genImagesBtn').disabled = $('#genAudioBtn').disabled = false;
+    $('#stopBtn').hidden = true;
+    renderScenes();
+  }
+}
+
+// 分割保存された朗読を1本に戻す（作品ごとに1回だけ）
+async function narrationBlob(onProg) {
+  const n = state.project.narration;
+  if (narrCache.id === n.uploadId) return narrCache;
+  const blobs = [];
+  for (let i = 0; i < n.parts.length; i++) {
+    if (onProg) onProg(i, n.parts.length);
+    blobs.push((await asset(n.parts[i])).blob);
+  }
+  const blob = new Blob(blobs, { type: n.mimeType });
+  n.parts.forEach(id => { const c = assetCache.get(id); if (c) c.then(a => URL.revokeObjectURL(a.url)).catch(() => {}); assetCache.delete(id); });
+  if (narrCache.url) URL.revokeObjectURL(narrCache.url);
+  narrCache = { id: n.uploadId, blob, url: URL.createObjectURL(blob) };
+  return narrCache;
+}
+
+function initTapAlign() {
+  const m = $('#tapModal'), au = $('#tapAudio');
+  let marks = [], k = 1;
+  const head = t => (t || '').replace(/\s+/g, '').slice(0, 40) + '…';
+  const show = () => {
+    const sc = state.project.scenes;
+    $('#tapCur').textContent = `場面${k}／${sc.length}　${sc[k - 1].summary}`;
+    $('#tapNext').textContent = k < sc.length ? `場面${k + 1}：${head(sc[k].text)}` : '（最後の場面です）';
+    $('#tapMark').disabled = k >= sc.length;
+    $('#tapUndo').disabled = k <= 1;
+  };
+  const mark = () => {
+    const sc = state.project.scenes;
+    if (k >= sc.length) return;
+    const t = au.currentTime;
+    if (t <= marks[k - 1] + 0.3) { toast('前の区切りより後ろで押してください', true); return; }
+    marks[k] = Math.round(t * 10) / 10;
+    k++;
+    show();
+    if (k >= sc.length) toast('最後の場面まで区切りました。「区切りを保存」を押してください');
+  };
+  $('#tapAlignBtn').addEventListener('click', withBusy($('#tapAlignBtn'), async () => {
+    const sc = state.project.scenes || [];
+    if (sc.length < 2) throw new Error('場面が2つ以上必要です');
+    $('#tapAlignBtn').textContent = '朗読を読み込み中…';
+    const nc = await narrationBlob();
+    if (au.src !== nc.url) au.src = nc.url;
+    au.currentTime = 0;
+    marks = sc.map((x, i) => i === 0 ? 0 : null);
+    k = 1;
+    show();
+    m.showModal();
+    $('#tapMark').focus();
+  }));
+  $('#tapRate').addEventListener('change', () => { au.playbackRate = Number($('#tapRate').value); });
+  au.addEventListener('play', () => { au.playbackRate = Number($('#tapRate').value); });
+  $('#tapMark').addEventListener('click', mark);
+  $('#tapUndo').addEventListener('click', () => {
+    if (k <= 1) return;
+    k--;
+    marks[k] = null;
+    au.currentTime = Math.max(0, marks[k - 1]);
+    show();
+  });
+  m.addEventListener('keydown', e => {
+    if (e.code === 'Space' && e.target.tagName !== 'SELECT') { e.preventDefault(); e.stopPropagation(); mark(); }
+  }, true);
+  m.addEventListener('close', () => au.pause());
+  $('#tapCancel').addEventListener('click', () => m.close());
+  $('#tapSave').addEventListener('click', () => {
+    const n = state.project.narration;
+    n.starts = fillStarts(marks, n.duration);
+    n.aligned = 'manual';
+    scheduleSave({ narrationStarts: n.starts });
+    m.close();
+    renderScenes();
+    toast('区切りを保存しました');
+  });
 }
 
 /* ---------- 生成 ---------- */
@@ -743,7 +1077,8 @@ async function preparePlayer() {
   $('#butaiTitle').textContent = p.title || '';
   renderCueList();
   if (!scenes.length) { $('#prepStatus').textContent = '場面がありません'; drawCard('場面がまだありません'); return; }
-  const sig = p.id + ':' + scenes.map(s => (s.imageFileId || '') + (s.audioFileId || '')).join('|');
+  const mode = audioMode();
+  const sig = p.id + ':' + mode + ':' + (mode === 'narration' ? p.narration.uploadId : '') + ':' + scenes.map(s => (s.imageFileId || '') + (s.audioFileId || '')).join('|');
   if (pl.ready && pl.loadingFor === sig) { $('#prepStatus').textContent = '準備できています'; return; }
   pl.ready = false; pl.loadingFor = sig;
   if (!pl.ctx) pl.ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -766,7 +1101,7 @@ async function preparePlayer() {
           const a = await asset(s.imageFileId);
           pl.images[i] = await createImageBitmap(a.blob);
         }
-        if (s.audioFileId) {
+        if (mode === 'scenes' && s.audioFileId) {
           const a = await asset(s.audioFileId);
           pl.buffers[i] = await pl.ctx.decodeAudioData(await a.blob.arrayBuffer());
         }
@@ -776,9 +1111,31 @@ async function preparePlayer() {
   };
   await Promise.all([worker(), worker(), worker()]);
   if (pl.loadingFor !== sig) return;
+  pl.mode = mode;
+  if (mode === 'narration') {
+    try {
+      const nc = await narrationBlob((i, t) => { $('#prepStatus').textContent = `朗読ファイルを読み込み中… ${i + 1}/${t}`; });
+      if (pl.narrUrl !== nc.url) {
+        if (pl.narrEl) pl.narrEl.pause();
+        const el = new Audio();
+        el.preload = 'auto';
+        el.src = nc.url;
+        el.addEventListener('ended', () => { if (pl.playing) finishPlayback(); });
+        pl.narrEl = el;
+        pl.narrNode = pl.ctx.createMediaElementSource(el);
+        pl.narrNode.connect(pl.ctx.destination);
+        pl.narrUrl = nc.url;
+      }
+    } catch (e) {
+      $('#prepStatus').textContent = '朗読ファイルを読み込めませんでした：' + e.message;
+      pl.loadingFor = null;
+      return;
+    }
+    if (pl.loadingFor !== sig) return;
+  }
   pl.ready = true;
   const noImg = scenes.filter((s, i) => !pl.images[i]).length;
-  const noAud = scenes.filter((s, i) => !pl.buffers[i]).length;
+  const noAud = mode === 'narration' ? 0 : scenes.filter((s, i) => !pl.buffers[i]).length;
   $('#prepStatus').textContent = (noImg || noAud)
     ? `準備できました（絵なし${noImg}場面・朗読なし${noAud}場面は、文字の札と無音で進みます）`
     : '準備できました';
@@ -875,8 +1232,23 @@ function drawCaption(i, p) {
 
 function frame() {
   if (!pl.playing) return;
-  const el = pl.ctx.currentTime - pl.startAt;
-  const p = pl.dur ? el / pl.dur : 1;
+  let el, p;
+  if (pl.mode === 'narration') {
+    const t = pl.narrEl.currentTime;
+    const times = sceneTimes();
+    let i = 0;
+    for (let k = 0; k < times.length; k++) if (times[k].from <= t) i = k;
+    if (i !== pl.idx) {
+      pl.prev = i === pl.idx + 1 ? pl.idx : null;
+      pl.idx = i;
+      markNow(i);
+    }
+    el = t - times[i].from;
+    p = el / times[i].dur;
+  } else {
+    el = pl.ctx.currentTime - pl.startAt;
+    p = pl.dur ? el / pl.dur : 1;
+  }
   const fade = 0.8;
   pl.g.fillStyle = '#1c1a17';
   pl.g.fillRect(0, 0, pl.cv.width, pl.cv.height);
@@ -925,11 +1297,16 @@ async function playFrom(i) {
   pl.prev = null; pl.idx = i; pl.playing = true; pl.paused = false;
   setControls();
   cancelAnimationFrame(pl.raf);
-  startScene();
+  if (pl.mode === 'narration') {
+    pl.narrEl.currentTime = sceneTimes()[i].from;
+    markNow(i);
+    try { await pl.narrEl.play(); } catch (e) { toast('朗読を再生できませんでした', true); pl.playing = false; setControls(); return; }
+  } else startScene();
   pl.raf = requestAnimationFrame(frame);
 }
 
 function stopSource() {
+  if (pl.narrEl) pl.narrEl.pause();
   if (pl.src) { const s = pl.src; pl.src = null; try { s.onended = null; s.stop(); } catch (e) { } }
 }
 
@@ -971,7 +1348,10 @@ function initPlayer() {
   $('#playBtn').addEventListener('click', () => playFrom(0));
   $('#pauseBtn').addEventListener('click', async () => {
     if (!pl.playing) return;
-    if (pl.paused) { await pl.ctx.resume(); pl.paused = false; }
+    if (pl.mode === 'narration') {
+      if (pl.paused) { await pl.narrEl.play(); pl.paused = false; }
+      else { pl.narrEl.pause(); pl.paused = true; }
+    } else if (pl.paused) { await pl.ctx.resume(); pl.paused = false; }
     else { await pl.ctx.suspend(); pl.paused = true; }
     setControls();
   });
@@ -992,16 +1372,19 @@ function initPlayer() {
 async function startRecording() {
   if (!pl.ready) return;
   if (!window.MediaRecorder || !pl.cv.captureStream) { toast('このブラウザは動画の書き出しに対応していません（Chrome推奨）', true); return; }
-  const total = state.project.scenes.reduce((a, s, i) => a + (pl.buffers[i] ? pl.buffers[i].duration : sceneDur(s)), 0);
+  const total = pl.mode === 'narration' ? state.project.narration.duration
+    : state.project.scenes.reduce((a, s, i) => a + (pl.buffers[i] ? pl.buffers[i].duration : sceneDur(s)), 0);
   if (!confirm(`上演をそのまま録画します（約${fmtTime(total)}）。終わるまでこのタブを表示したままにしてください。始めますか？`)) return;
   await pl.ctx.resume();
   pl.dest = pl.ctx.createMediaStreamDestination();
+  if (pl.mode === 'narration') pl.narrNode.connect(pl.dest);
   const stream = new MediaStream([...pl.cv.captureStream(30).getVideoTracks(), ...pl.dest.stream.getAudioTracks()]);
   const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'].find(m => MediaRecorder.isTypeSupported(m));
   pl.recChunks = []; pl.recCancel = false;
   pl.rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 5e6 });
   pl.rec.ondataavailable = e => { if (e.data.size) pl.recChunks.push(e.data); };
   pl.rec.onstop = () => {
+    if (pl.narrNode && pl.dest) try { pl.narrNode.disconnect(pl.dest); } catch (e) { }
     pl.dest = null;
     const cancelled = pl.recCancel;
     pl.rec = null;

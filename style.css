@@ -145,6 +145,32 @@ main { max-width: 1180px; margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }
 .ops .busy { color: var(--muted); font-size: .8rem; }
 .ok-mark { color: #2f6b3a; font-size: .8rem; }
 
+/* 作風 */
+.style-box { margin-top: 1rem; }
+.style-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 1.2rem; }
+.sr-title { font-weight: 500; font-size: .95rem; margin: .7em 0 .3em; }
+.sr-list { display: flex; gap: .6rem; flex-wrap: wrap; min-height: 3rem; }
+.sr { margin: 0; width: 110px; }
+.sr-img { width: 110px; height: 110px; background: var(--washi); border: 1.5px solid var(--line); border-radius: 4px; overflow: hidden; display: grid; place-items: center; font-size: .8rem; color: var(--muted); }
+.sr-img img { width: 100%; height: 100%; object-fit: cover; }
+.sr-del { font: inherit; font-size: .8rem; background: none; border: 0; color: var(--danger); cursor: pointer; padding: .2em 0; text-decoration: underline; }
+.style-box .row { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .6rem; }
+
+/* 朗読の取り込み */
+.narr { margin-bottom: 1.2rem; }
+.modes { display: flex; flex-wrap: wrap; gap: .3rem 1.4rem; margin: .3rem 0 .6rem; }
+.modes label { margin: 0; font-weight: 400; display: flex; align-items: center; }
+.narr .tools { margin-bottom: 0; }
+#tapAudio { width: 100%; margin: .6rem 0; }
+.tap-now { background: var(--washi); border-radius: 6px; padding: .4rem .9rem; }
+.tap-now p { margin: .3em 0; }
+.tap-now q { color: var(--ai); font-weight: 700; }
+.tap-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .6rem; margin-top: .8rem; }
+.tap-row span { display: flex; gap: .4rem; }
+#tapMark { font-size: 1.1rem; padding: .7em 1.4em; }
+label.inline { display: inline-flex; align-items: center; gap: .4em; margin: 0; }
+label.inline select { width: auto; margin: 0; }
+
 /* 上演：紙芝居の舞台（このアプリの見せ場） */
 .theater { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1.5rem; align-items: start; }
 .butai { position: relative; padding: 0 0 24px; }
@@ -189,6 +215,7 @@ main { max-width: 1180px; margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }
   .grid2 { grid-template-columns: 1fr; }
   .char { grid-template-columns: 1fr; }
   .char .ref { width: 100%; }
+  .style-grid { grid-template-columns: 1fr; }
   .topbar { flex-wrap: wrap; padding: .6rem 1rem; }
   .who { margin-left: 0; }
   .butai-window { border-width: 12px; border-top-width: 6px; }

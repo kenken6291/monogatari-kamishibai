@@ -129,8 +129,7 @@
             </div>
           </fieldset>
           <fieldset class="box">
-            <legend>画風と朗読の声</legend>
-            <label>画風<input id="styleInput" placeholder="例：昭和の少年漫画風、水彩のやさしい色づかい"></label>
+            <legend>朗読の声（AI生成するとき）</legend>
             <label>声
               <select id="voiceSelect">
                 <option value="Kore">Kore（落ち着いた女性）</option>
@@ -146,6 +145,27 @@
           </fieldset>
         </div>
 
+        <fieldset class="box style-box">
+          <legend>漫画の作風</legend>
+          <div class="style-grid">
+            <div>
+              <p class="sr-title">参考絵（3枚まで）</p>
+              <div id="styleRefList" class="sr-list"></div>
+              <div class="row">
+                <button class="btn small ghost" id="styleRefAdd">参考絵を追加</button>
+                <button class="btn small primary" id="styleAnalyzeBtn">参考絵から作風を作る</button>
+              </div>
+              <label class="check"><input type="checkbox" id="styleRefAttach" checked> 絵を描くたびに参考絵もAIに見せる</label>
+            </div>
+            <div>
+              <label>作風の説明（AIへの画風指示）
+                <textarea id="styleInput" rows="7" placeholder="例：昭和の少年漫画風。太く強弱のある墨線、スクリーントーン風の陰影、くすんだ色数の少ない彩色。"></textarea>
+              </label>
+            </div>
+          </div>
+          <p class="note">参考絵の線・塗り・色づかいだけを真似し、描かれている人物や構図は写しません。自分で描いた絵や、使ってよいと許された絵を選んでください。</p>
+        </fieldset>
+
         <div class="chars-head">
           <h3>登場人物</h3>
           <button class="btn ghost" id="addCharBtn">人物を追加</button>
@@ -156,6 +176,21 @@
 
       <!-- 3 場面と生成 -->
       <div class="pane" id="pane3" hidden>
+        <fieldset class="box narr">
+          <legend>朗読の音声</legend>
+          <div class="modes">
+            <label><input type="radio" name="audioMode" value="scenes"> 場面ごとの音声（AI生成、または場面ごとに取り込み）</label>
+            <label><input type="radio" name="audioMode" value="narration"> 取り込んだ朗読ファイル（作品まるごと1本）</label>
+          </div>
+          <div class="tools">
+            <label class="btn ghost file-btn" id="narrFileBtn">朗読ファイルを取り込む<input type="file" id="narrFile" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac" hidden></label>
+            <button class="btn ghost" id="alignAiBtn">AIで場面に合わせる</button>
+            <button class="btn ghost" id="tapAlignBtn">聞きながら区切る</button>
+            <button class="btn ghost" id="alignRatioBtn">文字数の比率で合わせる</button>
+            <button class="btn small danger" id="narrDelBtn">朗読ファイルを外す</button>
+          </div>
+          <p class="note" id="narrInfo"></p>
+        </fieldset>
         <div class="gen-bar">
           <button class="btn primary" id="genImagesBtn">絵を一括生成</button>
           <button class="btn primary" id="genAudioBtn">朗読を一括生成</button>
@@ -207,8 +242,9 @@
   <ol class="howto">
     <li><b>本文を入れる</b>　小説を貼り付けるか、テキストファイルを読み込みます。音声で書き足すこともできます。</li>
     <li><b>AIで場面に分ける</b>　物語の流れから、絵を切り替える場面と枚数をAIが決めます。</li>
-    <li><b>絵と声を決める</b>　画像の形（横長・縦長・正方形）、画風、朗読の声を選びます。登場人物の特徴を書くか三面図を用意すると、見た目が揃います。</li>
+    <li><b>絵と声を決める</b>　画像の形（横長・縦長・正方形）と朗読の声を選びます。作風は文章で書くか、参考絵を読み込んで「参考絵から作風を作る」でAIに作らせます。登場人物の特徴を書くか三面図を用意すると、見た目が揃います。</li>
     <li><b>絵と朗読を生成する</b>　「場面と生成」で一括生成します。気に入らない場面は個別に作り直せます。Google Earth Studioで書き出した風景を「背景参考」に入れると、その景色を元に描きます。</li>
+    <li><b>朗読がすでにある場合</b>　「場面と生成」の「朗読ファイルを取り込む」で作品まるごとの音声を入れ、「AIで場面に合わせる」か「聞きながら区切る」で、絵の切り替え位置を合わせます。場面ごとに分かれた音声なら、対応表の「朗読を取り込む」で1つずつ入れられます。</li>
     <li><b>上演する</b>　朗読に合わせて絵が切り替わり、ゆっくりパン・ズーム・スライドします。</li>
     <li><b>書き出す</b>　「動画として書き出す」で、上演をそのまま動画ファイルに保存できます。</li>
   </ol>
@@ -240,6 +276,30 @@
   <div class="modal-actions">
     <button class="btn ghost" id="smCancel" type="button">閉じる</button>
     <button class="btn primary" id="smSave" type="button">保存</button>
+  </div>
+</dialog>
+
+<!-- 聞きながら区切る -->
+<dialog id="tapModal" class="modal wide">
+  <h2>聞きながら区切る</h2>
+  <p class="note">朗読を再生し、次の場面の冒頭が読まれ始めたら「ここから次の場面」を押します（スペースキーでも押せます）。最後まで区切らずに保存すると、残りは文字数の比率で割り振ります。</p>
+  <audio id="tapAudio" controls preload="auto"></audio>
+  <div class="tap-now">
+    <p>いま：<b id="tapCur"></b></p>
+    <p>次の場面の冒頭：<q id="tapNext"></q></p>
+  </div>
+  <div class="tap-row">
+    <label class="inline">速さ
+      <select id="tapRate"><option value="1">1倍</option><option value="1.25">1.25倍</option><option value="1.5">1.5倍</option><option value="2">2倍</option></select>
+    </label>
+    <span>
+      <button class="btn ghost" id="tapUndo" type="button">1つ戻す</button>
+      <button class="btn primary" id="tapMark" type="button">ここから次の場面</button>
+    </span>
+  </div>
+  <div class="modal-actions">
+    <button class="btn ghost" id="tapCancel" type="button">保存せずに閉じる</button>
+    <button class="btn primary" id="tapSave" type="button">区切りを保存</button>
   </div>
 </dialog>
 
