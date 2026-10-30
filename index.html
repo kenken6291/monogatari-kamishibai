@@ -116,7 +116,20 @@
         <fieldset class="box scene-plan">
           <legend>場面の数（絵の枚数）</legend>
           <div class="plan-opts">
-            <label><input type="radio" name="sceneMode" value="auto"> AIにおまかせ</label>
+            <div class="ai-plan">
+              <label><input type="radio" name="sceneMode" value="auto"> AIのおすすめ枚数 ×</label>
+              <div class="mults" id="multBtns" role="group" aria-label="倍率">
+                <button type="button" data-m="1">1倍</button>
+                <button type="button" data-m="1.5">1.5倍</button>
+                <button type="button" data-m="2">2倍</button>
+                <button type="button" data-m="2.5">2.5倍</button>
+                <button type="button" data-m="3">3倍</button>
+              </div>
+            </div>
+            <div class="ai-base">
+              <button type="button" class="btn small ghost" id="suggestBtn">AIに最適な枚数を出してもらう</button>
+              <span id="aiBaseInfo" class="note"></span>
+            </div>
             <label><input type="radio" name="sceneMode" value="count"> 場面数で指定
               <input type="number" id="sceneCount" class="num" min="2" max="150" step="1" value="40"> 場面</label>
             <label><input type="radio" name="sceneMode" value="seconds"> 1場面の平均時間で指定

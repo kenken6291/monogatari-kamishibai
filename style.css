@@ -161,6 +161,13 @@ main { max-width: 1180px; margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }
 .plan-opts { display: flex; flex-direction: column; gap: .45rem; margin: .4rem 0; }
 .plan-opts label { margin: 0; font-weight: 400; display: flex; align-items: center; flex-wrap: wrap; gap: .3em; }
 .num { width: 6em; margin: 0 .2em; padding: .3em .5em; text-align: right; font-variant-numeric: tabular-nums; }
+.ai-plan { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+.ai-plan label { margin: 0; }
+.mults { display: inline-flex; border: 1.5px solid var(--ai); border-radius: 6px; overflow: hidden; }
+.mults button { font: inherit; font-weight: 700; font-size: .9rem; background: var(--sheet); color: var(--ai); border: 0; border-left: 1.5px solid var(--ai); padding: .3em .8em; cursor: pointer; font-variant-numeric: tabular-nums; }
+.mults button:first-child { border-left: 0; }
+.mults button[aria-pressed="true"] { background: var(--ai); color: #fff; }
+.ai-base { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; margin: 0 0 .3rem 1.6rem; }
 .plan-est { background: var(--ai-soft); border-radius: 6px; padding: .5em .9em; margin: .6rem 0; font-weight: 500; }
 
 /* 字幕の同期 */

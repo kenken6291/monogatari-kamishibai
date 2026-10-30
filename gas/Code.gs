@@ -3,7 +3,7 @@
  * 小説 → 場面分割 → 漫画風静止画 → 朗読音声（Gemini TTS）
  * 保存先：Google Drive（作品ごとにフォルダ / project.json）＋会員はスプレッドシート
  */
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 const SP = PropertiesService.getScriptProperties();
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const USER_COLS = ['email', 'name', 'salt', 'hash', 'mustChange', 'createdAt', 'agreedAt', 'lastLogin', 'failCount', 'lockedUntil'];
@@ -69,7 +69,7 @@ const HANDLERS = {
   listProjects, getProject, saveProject, deleteProject,
   analyze, uploadFile, generateImage, generateCharacterSheet, generateTTS, getAsset,
   uploadSceneAudio, narrationPart, narrationCommit, deleteNarration, alignNarration,
-  removeStyleRef, analyzeStyle, alignWindow
+  removeStyleRef, analyzeStyle, alignWindow, suggestSceneCount
 };
 
 /* ========== 会員 ========== */
@@ -268,7 +268,7 @@ function saveProject(req, u) {
   if (inP.text && inP.text.length > 60000) throw new Error('本文が長すぎます（6万字まで）');
   if (inP.aspect && ASPECTS.indexOf(inP.aspect) < 0) throw new Error('画像サイズの指定が不正です');
   if (inP.audioMode && ['scenes', 'narration'].indexOf(inP.audioMode) < 0) throw new Error('音声の種類が不正です');
-  const keys = ['title', 'text', 'aspect', 'style', 'voice', 'characters', 'scenes', 'subtitles', 'audioMode', 'narrationStarts', 'styleRefAttach', 'captions', 'sceneMode', 'sceneCount', 'sceneSec'];
+  const keys = ['title', 'text', 'aspect', 'style', 'voice', 'characters', 'scenes', 'subtitles', 'audioMode', 'narrationStarts', 'styleRefAttach', 'captions', 'sceneMode', 'sceneCount', 'sceneSec', 'sceneMult'];
   if (!inP.id) {
     const id = Utilities.getUuid().slice(0, 8) + Date.now().toString(36);
     const folder = userFolder(u).createFolder('p_' + id);
@@ -960,4 +960,37 @@ function alignWindow(req, u) {
   try { arr = JSON.parse(textOf(res)).starts || []; } catch (e) { }
   arr.forEach(a => { if (a.i >= 0 && a.i < out.length && isFinite(a.sec)) out[a.i] = Number(a.sec); });
   return { starts: out };
+}
+
+/* ========== AIのおすすめ場面数 ========== */
+function suggestSceneCount(req, u) {
+  const folder = projectFolder(u, req.projectId);
+  const p = readProject(folder);
+  const text = String(p.text || '');
+  if (text.length < 100) throw new Error('本文が短すぎます（100字以上にしてください）');
+  const sec = Number(req.durationSec) || text.length / 6.5;
+  const prompt = [
+    'あなたは紙芝居と漫画の演出家です。下の小説を朗読に合わせて紙芝居（漫画風の1枚絵を順に見せる）にします。',
+    '物語の展開・場面転換・登場人物の出入り・感情の山場・絵として見せたい瞬間を数え、紙芝居として最適な絵の枚数を1つ決めてください。',
+    '朗読の長さはおよそ ' + Math.round(sec / 60) + ' 分（全' + text.length + '字）です。1枚あたりの朗読時間が極端に長すぎたり短すぎたりしないこと（目安は30秒〜3分）。',
+    'count には枚数（4〜100の整数）、reason にはそう判断した理由を60字以内で書いてください。',
+    '', '【小説】', text
+  ].join('\n');
+  const res = callGemini(model('text'), {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      responseMimeType: 'application/json', temperature: 0.2,
+      responseSchema: { type: 'OBJECT', properties: { count: { type: 'INTEGER' }, reason: { type: 'STRING' } }, required: ['count', 'reason'] }
+    }
+  });
+  let out;
+  try { out = JSON.parse(textOf(res)); } catch (e) { throw new Error('おすすめ枚数を読み取れませんでした。もう一度お試しください'); }
+  const count = Math.max(4, Math.min(100, Math.round(Number(out.count) || 0)));
+  return {
+    project: withProject(u, p.id, pp => {
+      pp.aiSceneBase = count;
+      pp.aiSceneReason = String(out.reason || '').slice(0, 120);
+      pp.aiSceneTextLen = text.length;
+    })
+  };
 }
