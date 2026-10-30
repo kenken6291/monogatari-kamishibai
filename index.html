@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ものがたり紙芝居</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ===== 認証 ===== -->
+<section id="authView" class="auth" hidden>
+  <div class="auth-card">
+    <h1 class="brand-big">ものがたり<br>紙芝居</h1>
+    <p class="lead">小説を、絵と朗読の紙芝居に。</p>
+
+    <form id="loginForm" class="auth-pane" data-pane="login">
+      <h2>ログイン</h2>
+      <label>メールアドレス<input type="email" id="loginEmail" autocomplete="email" required></label>
+      <label>パスワード
+        <span class="pw"><input type="password" id="loginPw" autocomplete="current-password" required><button type="button" class="eye" aria-label="パスワードを表示">表示</button></span>
+      </label>
+      <button class="btn primary" type="submit">ログイン</button>
+      <p class="links"><a href="#" data-go="register">新規登録</a><a href="#" data-go="forgot">パスワードを忘れた</a></p>
+    </form>
+
+    <form id="registerForm" class="auth-pane" data-pane="register" hidden>
+      <h2>新規登録</h2>
+      <label>氏名（ニックネーム可）<input type="text" id="regName" maxlength="40" required></label>
+      <label>メールアドレス<input type="email" id="regEmail" autocomplete="email" required></label>
+      <details class="terms">
+        <summary>利用規約・免責事項を読む</summary>
+        <p>本サービスは個人が運営する無償のサービスです。AIが生成する画像・音声・文章の正確性、適法性、品質は保証しません。入力する小説は、ご自身が権利を持つもの、または著作権の保護期間が終了したものに限ってください。生成物の利用により生じた損害について、運営者は責任を負いません。利用者同士、または利用者と第三者の間で生じた問題は、当事者間で解決してください。サービスは予告なく変更・停止することがあります。</p>
+      </details>
+      <fieldset class="agree">
+        <legend>同意事項（すべて必須）</legend>
+        <label><input type="checkbox" data-k="disclaimer"> 免責事項に同意します</label>
+        <label><input type="checkbox" data-k="terms"> 利用規約に同意します</label>
+        <label><input type="checkbox" data-k="selfResponsibility"> 自己責任で利用します</label>
+        <label><input type="checkbox" data-k="betweenParties"> トラブルは当事者間で解決します</label>
+      </fieldset>
+      <button class="btn primary" type="submit" id="regSubmit" disabled>仮パスワードを受け取る</button>
+      <p class="links"><a href="#" data-go="login">ログインへ戻る</a></p>
+    </form>
+
+    <form id="forgotForm" class="auth-pane" data-pane="forgot" hidden>
+      <h2>パスワード再発行</h2>
+      <p class="note">登録したメールアドレスに仮パスワードを送ります。</p>
+      <label>メールアドレス<input type="email" id="forgotEmail" required></label>
+      <button class="btn primary" type="submit">仮パスワードを送る</button>
+      <p class="links"><a href="#" data-go="login">ログインへ戻る</a></p>
+    </form>
+
+    <form id="changeForm" class="auth-pane" data-pane="change" hidden>
+      <h2>パスワード変更</h2>
+      <p class="note">仮パスワードでログインしました。新しいパスワードを決めてください（英字と数字を含む8文字以上）。</p>
+      <label>現在（仮）のパスワード<span class="pw"><input type="password" id="curPw" required><button type="button" class="eye" aria-label="パスワードを表示">表示</button></span></label>
+      <label>新しいパスワード<span class="pw"><input type="password" id="newPw" autocomplete="new-password" required><button type="button" class="eye" aria-label="パスワードを表示">表示</button></span></label>
+      <label>新しいパスワード（確認）<span class="pw"><input type="password" id="newPw2" autocomplete="new-password" required><button type="button" class="eye" aria-label="パスワードを表示">表示</button></span></label>
+      <button class="btn primary" type="submit">変更する</button>
+    </form>
+  </div>
+</section>
+
+<!-- ===== アプリ本体 ===== -->
+<div id="appView" hidden>
+  <header class="topbar">
+    <a href="#" class="brand" id="homeLink">ものがたり紙芝居</a>
+    <span class="who" id="whoName"></span>
+    <nav class="topnav">
+      <button class="link-btn" id="helpBtn">使い方</button>
+      <button class="link-btn" id="settingsBtn">設定</button>
+      <button class="link-btn" id="logoutBtn">ログアウト</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- 作品一覧 -->
+    <section id="listView">
+      <div class="list-head">
+        <h2>作品</h2>
+        <button class="btn primary" id="newProjectBtn">新しい作品をつくる</button>
+      </div>
+      <ul id="projectList" class="project-list"></ul>
+    </section>
+
+    <!-- 編集 -->
+    <section id="editView" hidden>
+      <div class="edit-head">
+        <button class="link-btn" id="backBtn">← 作品一覧</button>
+        <input id="projTitle" class="title-input" placeholder="作品のタイトル" maxlength="60">
+        <span class="save-state" id="saveState"></span>
+      </div>
+
+      <ol class="steps" role="tablist">
+        <li><button class="step-tab" data-step="1" role="tab">本文</button></li>
+        <li><button class="step-tab" data-step="2" role="tab">絵と声の設定</button></li>
+        <li><button class="step-tab" data-step="3" role="tab">場面と生成</button></li>
+        <li><button class="step-tab" data-step="4" role="tab">上演・書き出し</button></li>
+      </ol>
+
+      <!-- 1 本文 -->
+      <div class="pane" id="pane1">
+        <div class="tools">
+          <label class="btn ghost file-btn">テキストファイルを読み込む<input type="file" id="fileInput" accept=".txt,text/plain" hidden></label>
+          <button class="btn ghost mic" id="micNovel">音声で追記</button>
+          <span class="interim" id="interimNovel"></span>
+        </div>
+        <textarea id="novelText" class="novel" placeholder="ここに小説の本文を貼り付けます（2万5千字程度まで快適に扱えます）"></textarea>
+        <div class="pane-foot">
+          <span id="charCount" class="count">0字</span>
+          <button class="btn primary" id="analyzeBtn">AIで場面に分ける</button>
+        </div>
+        <p class="note">AIが物語の流れを読み、絵を切り替える場面と枚数を決めます。登場人物も自動で書き出します。</p>
+      </div>
+
+      <!-- 2 設定 -->
+      <div class="pane" id="pane2" hidden>
+        <div class="grid2">
+          <fieldset class="box">
+            <legend>画像の形</legend>
+            <div class="aspects">
+              <label><input type="radio" name="aspect" value="16:9"><span class="shape s169"></span>横長</label>
+              <label><input type="radio" name="aspect" value="9:16"><span class="shape s916"></span>縦長</label>
+              <label><input type="radio" name="aspect" value="1:1"><span class="shape s11"></span>正方形</label>
+            </div>
+          </fieldset>
+          <fieldset class="box">
+            <legend>画風と朗読の声</legend>
+            <label>画風<input id="styleInput" placeholder="例：昭和の少年漫画風、水彩のやさしい色づかい"></label>
+            <label>声
+              <select id="voiceSelect">
+                <option value="Kore">Kore（落ち着いた女性）</option>
+                <option value="Aoede">Aoede（明るい女性）</option>
+                <option value="Leda">Leda（若い女性）</option>
+                <option value="Charon">Charon（低めの男性）</option>
+                <option value="Orus">Orus（はっきりした男性）</option>
+                <option value="Puck">Puck（軽やかな男性）</option>
+                <option value="Fenrir">Fenrir（力強い男性）</option>
+                <option value="Zephyr">Zephyr（さわやか）</option>
+              </select>
+            </label>
+          </fieldset>
+        </div>
+
+        <div class="chars-head">
+          <h3>登場人物</h3>
+          <button class="btn ghost" id="addCharBtn">人物を追加</button>
+        </div>
+        <p class="note">特徴（髪型・服装・性格など）を書くか、三面図をアップロードすると、全場面で同じ見た目に揃いやすくなります。</p>
+        <div id="charList" class="char-list"></div>
+      </div>
+
+      <!-- 3 場面と生成 -->
+      <div class="pane" id="pane3" hidden>
+        <div class="gen-bar">
+          <button class="btn primary" id="genImagesBtn">絵を一括生成</button>
+          <button class="btn primary" id="genAudioBtn">朗読を一括生成</button>
+          <button class="btn ghost" id="stopBtn" hidden>止める</button>
+          <div class="progress" id="progressWrap" hidden><div class="bar" id="progressBar"></div><span id="progressText"></span></div>
+        </div>
+        <h3 class="sub">タイムライン</h3>
+        <div id="timeline" class="timeline"></div>
+        <p class="note" id="timelineNote"></p>
+        <h3 class="sub">場面と絵・朗読の対応表</h3>
+        <div class="table-wrap">
+          <table class="scenes">
+            <thead><tr><th>場面</th><th>時間</th><th>絵</th><th>内容</th><th>動き</th><th>操作</th></tr></thead>
+            <tbody id="sceneBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 4 上演 -->
+      <div class="pane" id="pane4" hidden>
+        <div class="theater">
+          <div class="butai">
+            <div class="butai-top" id="butaiTitle"></div>
+            <div class="butai-window"><canvas id="stageCanvas" width="1280" height="720"></canvas></div>
+            <div class="butai-legs"><span></span><span></span></div>
+          </div>
+          <aside class="cue">
+            <div class="controls">
+              <button class="btn primary" id="playBtn">上演する</button>
+              <button class="btn ghost" id="pauseBtn" disabled>一時停止</button>
+              <button class="btn ghost" id="stopPlayBtn" disabled>最初に戻る</button>
+            </div>
+            <label class="check"><input type="checkbox" id="subToggle" checked> 字幕を表示</label>
+            <button class="btn ghost wide" id="recordBtn">動画として書き出す（WebM）</button>
+            <p class="note" id="prepStatus"></p>
+            <ol id="cueList" class="cue-list"></ol>
+          </aside>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<footer class="foot"><span id="version"></span></footer>
+
+<!-- 使い方 -->
+<dialog id="helpModal" class="modal">
+  <h2>使い方</h2>
+  <ol class="howto">
+    <li><b>本文を入れる</b>　小説を貼り付けるか、テキストファイルを読み込みます。音声で書き足すこともできます。</li>
+    <li><b>AIで場面に分ける</b>　物語の流れから、絵を切り替える場面と枚数をAIが決めます。</li>
+    <li><b>絵と声を決める</b>　画像の形（横長・縦長・正方形）、画風、朗読の声を選びます。登場人物の特徴を書くか三面図を用意すると、見た目が揃います。</li>
+    <li><b>絵と朗読を生成する</b>　「場面と生成」で一括生成します。気に入らない場面は個別に作り直せます。Google Earth Studioで書き出した風景を「背景参考」に入れると、その景色を元に描きます。</li>
+    <li><b>上演する</b>　朗読に合わせて絵が切り替わり、ゆっくりパン・ズーム・スライドします。</li>
+    <li><b>書き出す</b>　「動画として書き出す」で、上演をそのまま動画ファイルに保存できます。</li>
+  </ol>
+  <p class="note">絵1枚と朗読1場面の生成には、それぞれ数十秒かかります。止めてもそれまでの結果は保存されます。</p>
+  <form method="dialog"><button class="btn primary">はじめる</button></form>
+</dialog>
+
+<!-- 設定 -->
+<dialog id="settingsModal" class="modal">
+  <h2>接続先の設定</h2>
+  <p class="note">GASをウェブアプリとしてデプロイしたURL（/exec で終わる）を入力します。この端末のブラウザに保存され、config.js より優先されます。</p>
+  <label>GAS URL<input id="gasUrlInput" placeholder="https://script.google.com/macros/s/…/exec"></label>
+  <p class="note" id="gasTestResult"></p>
+  <div class="modal-actions">
+    <button class="btn ghost" id="gasTestBtn" type="button">接続を確認</button>
+    <button class="btn ghost" id="gasResetBtn" type="button">config.jsの値に戻す</button>
+    <button class="btn primary" id="gasSaveBtn" type="button">保存</button>
+  </div>
+</dialog>
+
+<!-- 場面の編集 -->
+<dialog id="sceneModal" class="modal wide">
+  <h2 id="sceneModalTitle">場面の編集</h2>
+  <label>あらすじ<input id="smSummary"></label>
+  <label>場所<input id="smLocation"></label>
+  <label>登場人物（読点区切り）<input id="smChars"></label>
+  <label>絵の描写（AIへの指示）<textarea id="smPrompt" rows="5"></textarea></label>
+  <details><summary>この場面の本文</summary><p id="smText" class="scene-text"></p></details>
+  <div class="modal-actions">
+    <button class="btn ghost" id="smCancel" type="button">閉じる</button>
+    <button class="btn primary" id="smSave" type="button">保存</button>
+  </div>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
