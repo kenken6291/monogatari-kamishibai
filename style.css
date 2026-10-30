@@ -239,6 +239,8 @@ label.inline select { width: auto; margin: 0; }
 #stageWrap.idle .fs-bar { opacity: 0; pointer-events: none; }
 #stageWrap.idle { cursor: none; }
 .keys { font-size: .8rem; }
+.progress.exp { min-width: 0; margin: .2rem 0 .6rem; }
+.progress.exp span { font-size: .8rem; }
 .cap-adj { margin-top: .5rem; font-size: .9rem; }
 
 /* モーダル */

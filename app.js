@@ -1768,8 +1768,10 @@ function setControls() {
   $('#pauseBtn').disabled = !pl.playing;
   $('#pauseBtn').textContent = pl.paused ? '再開' : '一時停止';
   $('#stopPlayBtn').disabled = !pl.playing;
-  const rec = !!(pl.rec && pl.rec.state === 'recording');
-  $('#recordBtn').textContent = rec ? '書き出しを中止' : '動画として書き出す（WebM）';
+  const rec = !!(pl.rec && pl.rec.state === 'recording') || !!pl.exporting;
+  $('#recordBtn').textContent = rec ? '書き出しを中止' : '動画を書き出す（高速）';
+  $('#playBtn').disabled = !pl.ready || !!pl.exporting;
+  $('#fsBtn').disabled = !!pl.exporting;
   $('#recordBtn').classList.toggle('rec', rec);
   $('#pauseBtn').disabled = !pl.playing || rec;
   $('#fsPlay').textContent = !pl.playing ? '最初から上演' : pl.paused ? '再開' : '一時停止';
@@ -1788,8 +1790,9 @@ function initPlayer() {
     markNow(-1);
   });
   $('#recordBtn').addEventListener('click', () => {
+    if (pl.exporting) { cancelExport(); return; }
     if (pl.rec && pl.rec.state === 'recording') { stopPlayback(false); toast('書き出しを中止しました'); return; }
-    startRecording();
+    exportVideo();
   });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && pl.rec && pl.rec.state === 'recording') toast('書き出し中は、このタブを表示したままにしてください', true);
@@ -1897,6 +1900,176 @@ function initFullscreen() {
   });
 }
 
+/* ---------- 動画の高速書き出し（WebCodecs＋Worker） ----------
+   再生せずに1コマずつ組み立ててエンコードする。実時間より何倍も速く、タブを裏に回しても止まらない。
+   保存先を先に選ぶと、作りながらファイルへ直接書き込むので長い作品でもメモリを使い切らない。 */
+const EXPORT_FPS = 24;
+
+async function pickExportFormat(W, H) {
+  const videos = [
+    { container: 'mp4', videoCodec: 'avc1.640028', ext: 'mp4', mime: 'video/mp4' },
+    { container: 'mp4', videoCodec: 'avc1.4d0028', ext: 'mp4', mime: 'video/mp4' },
+    { container: 'webm', videoCodec: 'vp09.00.10.08', videoMux: 'V_VP9', ext: 'webm', mime: 'video/webm' },
+    { container: 'webm', videoCodec: 'vp8', videoMux: 'V_VP8', ext: 'webm', mime: 'video/webm' }
+  ];
+  for (const v of videos) {
+    try {
+      const vs = await VideoEncoder.isConfigSupported({ codec: v.videoCodec, width: W, height: H, bitrate: 2000000, framerate: EXPORT_FPS });
+      if (!vs.supported) continue;
+      const audios = v.container === 'mp4' ? [['mp4a.40.2', 'aac'], ['opus', 'opus']] : [['opus', 'opus']];
+      for (const [codec, mux] of audios) {
+        const as = await AudioEncoder.isConfigSupported({ codec, sampleRate: 48000, numberOfChannels: 1, bitrate: 96000 });
+        if (as.supported) return { ...v, audioCodec: codec, audioMux: mux };
+      }
+    } catch (e) { }
+  }
+  return null;
+}
+
+// 書き出す音声を1本の配列にまとめる（長い作品はメモリ節約のため16kHz）
+async function buildExportAudio(timeline, totalDur) {
+  if (pl.mode === 'narration') {
+    const rate = totalDur > 2400 ? 16000 : 24000;
+    const nc = await narrationBlob();
+    const ctx = new OfflineAudioContext(1, rate, rate);
+    const buf = await ctx.decodeAudioData(await nc.blob.arrayBuffer());
+    return { data: buf.getChannelData(0), rate: buf.sampleRate };
+  }
+  const rate = 24000;
+  const data = new Float32Array(Math.ceil(totalDur * rate) + 1);
+  timeline.forEach((t, i) => {
+    const b = pl.buffers[i];
+    if (!b) return;
+    const src = b.getChannelData(0), ratio = b.sampleRate / rate;
+    const off = Math.round(t.from * rate), n = Math.min(Math.floor(b.duration * rate), data.length - off);
+    for (let j = 0; j < n; j++) {
+      const sp = j * ratio, i0 = sp | 0, fr = sp - i0;
+      const a = src[i0] || 0, c = src[i0 + 1] || 0;
+      data[off + j] = a + (c - a) * fr;
+    }
+  });
+  return { data, rate };
+}
+
+function exportProgress(text, ratio) {
+  $('#expWrap').hidden = false;
+  $('#expBar').style.width = (Math.max(0, Math.min(1, ratio)) * 100).toFixed(1) + '%';
+  $('#expText').textContent = text;
+}
+
+let exportWorker = null, baseTitle = document.title;
+
+function endExport(msg, err) {
+  pl.exporting = false;
+  if (exportWorker) { exportWorker.terminate(); exportWorker = null; }
+  document.title = baseTitle;
+  setControls();
+  if (msg) toast(msg, !!err);
+}
+
+function cancelExport() {
+  if (!exportWorker) return;
+  exportWorker.postMessage({ cmd: 'cancel' });
+  setTimeout(() => { if (pl.exporting) { exportProgress('書き出しを中止しました', 0); endExport('書き出しを中止しました'); } }, 1500);
+}
+
+async function exportVideo() {
+  if (!pl.ready) return;
+  if (!('VideoEncoder' in window) || !('OffscreenCanvas' in window) || !window.Worker) {
+    toast('このブラウザは高速書き出しに対応していないため、上演しながら録画します（パソコンのChrome・Edge推奨）', true);
+    return startRecording();
+  }
+  const p = state.project;
+  const W = pl.cv.width, H = pl.cv.height;
+  const fmt = await pickExportFormat(W, H);
+  if (!fmt) {
+    toast('この端末では高速書き出しができないため、上演しながら録画します', true);
+    return startRecording();
+  }
+  // 保存先を先に決める（ここで決めるとファイルへ直接書き込める）
+  let handle = null;
+  const name = (p.title || 'kamishibai').replace(/[\\/:*?"<>|]/g, '_') + '.' + fmt.ext;
+  if (window.showSaveFilePicker) {
+    try {
+      handle = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: '動画ファイル', accept: { [fmt.mime]: ['.' + fmt.ext] } }] });
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      handle = null;
+    }
+  }
+  stopPlayback(false);
+  if (isFs()) exitFs();
+  pl.exporting = true;
+  setControls();
+  try {
+    // 場面ごとの開始時刻と長さ
+    const scenes = p.scenes;
+    let timeline, totalDur;
+    if (pl.mode === 'narration') {
+      timeline = sceneTimes();
+      totalDur = p.narration.duration;
+    } else {
+      let t = 0;
+      timeline = scenes.map((s, i) => {
+        const d = pl.buffers[i] ? pl.buffers[i].duration : Math.max(3, (s.text || '').length / CHARS_PER_SEC);
+        const r = { from: t, dur: d }; t += d; return r;
+      });
+      totalDur = t;
+    }
+    if (!handle && totalDur > 1800) toast('保存先を選べないブラウザのため、書き出し中に多くのメモリを使います', true);
+    exportProgress('音声を準備しています…', 0);
+    const audio = await buildExportAudio(timeline, totalDur);
+    exportProgress('絵を準備しています…', 0);
+    const items = [];
+    for (let i = 0; i < scenes.length; i++) {
+      let blob = null;
+      if (scenes[i].imageFileId) { try { blob = (await asset(scenes[i].imageFileId)).blob; } catch (e) { } }
+      items.push({ from: timeline[i].from, dur: timeline[i].dur, effect: scenes[i].effect, summary: scenes[i].summary, blob });
+    }
+    const msg = {
+      cmd: 'start', W, H, fps: EXPORT_FPS, fmt, handle, totalDur,
+      scenes: items, caps: pl.caps, subtitles: $('#subToggle').checked, capOffset: capOffset(),
+      audio: { data: audio.data, rate: audio.rate }
+    };
+    exportWorker = new Worker('export-worker.js');
+    exportWorker.onmessage = e => {
+      const d = e.data;
+      if (d.type === 'progress') {
+        const speed = d.elapsed > 0 ? d.t / d.elapsed : 0;
+        const left = speed > 0 ? (d.total - d.t) / speed : 0;
+        const pct = Math.round(d.t / d.total * 100);
+        exportProgress(`書き出し中 ${fmtTime(d.t)} / ${fmtTime(d.total)}（${speed.toFixed(1)}倍速・残り約${fmtTime(left)}）`, d.t / d.total);
+        document.title = `（${pct}%）書き出し中 - ${baseTitle}`;
+      } else if (d.type === 'done') {
+        if (d.buffer) {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(new Blob([d.buffer], { type: fmt.mime }));
+          a.download = name;
+          document.body.appendChild(a); a.click(); a.remove();
+        }
+        exportProgress(`書き出し完了：${fmtTime(totalDur)}の動画を${fmtTime(d.elapsed)}で作成（${fmt.ext.toUpperCase()}）`, 1);
+        endExport('動画を保存しました');
+        if (document.hidden) document.title = `✅ 書き出し完了 - ${baseTitle}`;
+      } else if (d.type === 'cancelled') {
+        exportProgress('書き出しを中止しました', 0);
+        endExport('書き出しを中止しました');
+      } else if (d.type === 'error') {
+        exportProgress('書き出しに失敗しました', 0);
+        endExport('書き出しに失敗しました：' + d.message, true);
+      }
+    };
+    exportWorker.onerror = e => { exportProgress('書き出しに失敗しました', 0); endExport('書き出しに失敗しました：' + (e.message || ''), true); };
+    // 音声の配列はコピーせず Worker へ渡す（渡せない場合はコピー）
+    try { exportWorker.postMessage(msg, [audio.data.buffer]); }
+    catch (e) { exportWorker.postMessage(msg); }
+    exportProgress('書き出しを始めました…', 0);
+  } catch (e) {
+    exportProgress('書き出しに失敗しました', 0);
+    endExport('書き出しに失敗しました：' + e.message, true);
+  }
+}
+
+// 予備：WebCodecs に対応していないブラウザ用（上演しながら録画）
 async function startRecording() {
   if (!pl.ready) return;
   if (!window.MediaRecorder || !pl.cv.captureStream) { toast('このブラウザは動画の書き出しに対応していません（Chrome推奨）', true); return; }
