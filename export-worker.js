@@ -2,7 +2,7 @@
  * 再生せずに、絵・字幕・音声を1コマずつ組み立てて WebCodecs でエンコードする。
  * Worker で動くので、タブを裏に回しても止まらない。
  */
-importScripts('lib/mp4-muxer.js', 'lib/webm-muxer.js');
+importScripts('lib/mp4-muxer.js', 'lib/webm-muxer.js', 'lib/bubble.js');
 
 const OUT_RATE = 48000;          // AAC / Opus のサンプルレート
 const AUDIO_CHUNK = 24000;       // 0.5秒ずつエンコード
@@ -36,6 +36,7 @@ function waitQueue(enc, limit) {
 
 async function run(m) {
   const { W, H, fps, fmt, scenes, caps, subtitles, capOffset, audio, totalDur } = m;
+  const story = !!m.story; // ものがたりモード：吹き出しで表示
   const cv = new OffscreenCanvas(W, H);
   const g = cv.getContext('2d', { alpha: false });
 
@@ -149,9 +150,12 @@ async function run(m) {
   };
 
   const drawCaption = (i, el) => {
+    if (story && i === 0) KamiBubble.drawTitle(g, W, H, m.title, el, FONT);
+    else if (story && scenes[i].chapter) KamiBubble.drawChapter(g, W, H, scenes[i].chapter, el, FONT);
     if (!subtitles) return;
     const cs = caps[i] || [];
     if (!cs.length) return;
+    if (story) { KamiBubble.draw(g, W, H, cs, el + capOffset, FONT, m.capStyle); return; }
     const t = el + capOffset;
     const cap = t < cs[0].from ? cs[0] : (cs.find(c => t >= c.from && t < c.to) || cs[cs.length - 1]);
     const fs = Math.round(Math.min(W, H) / 22);

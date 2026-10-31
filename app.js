@@ -10,6 +10,22 @@ const LS = { url: 'mk_gas_url', token: 'mk_token', name: 'mk_name', help: 'mk_he
 const EFFECTS = { zoomIn: 'ゆっくり寄る', zoomOut: 'ゆっくり引く', panLeft: '左へパン', panRight: '右へパン', panUp: '上へパン', panDown: '下へパン', slideIn: 'スライドで登場', none: '動かさない' };
 const CANVAS = { '16:9': [1280, 720], '9:16': [720, 1280], '1:1': [1080, 1080] };
 const CHARS_PER_SEC = 6.5; // 音声未生成時の目安
+const NARRATOR = 'ナレーション';
+// Gemini TTS の声（GAS側の VOICES と同じ並び）
+const VOICES = [
+  ['Kore', '落ち着いた女性'], ['Aoede', '明るく軽やかな女性'], ['Leda', '若くはつらつとした女性'], ['Zephyr', 'さわやかな女性'],
+  ['Callirrhoe', 'おおらかな女性'], ['Autonoe', 'はきはきした女性'], ['Despina', 'なめらかな女性'], ['Erinome', '澄んだ声の女性'],
+  ['Laomedeia', '元気な女性'], ['Achernar', 'やわらかい女性'], ['Gacrux', '年配で円熟した女性'], ['Pulcherrima', '前向きで強い女性'],
+  ['Vindemiatrix', 'やさしい女性'], ['Sulafat', 'あたたかい女性'],
+  ['Charon', '低めで語り向きの男性'], ['Orus', 'はっきりした男性'], ['Puck', '軽やかな若い男性'], ['Fenrir', '力強く興奮しやすい男性'],
+  ['Iapetus', '澄んだ声の男性'], ['Enceladus', '息まじりの男性'], ['Umbriel', 'おおらかな男性'], ['Algieba', 'なめらかな男性'],
+  ['Algenib', 'しゃがれ声の年配男性'], ['Rasalgethi', '落ち着いた説明調の男性'], ['Alnilam', '硬く威厳のある男性'], ['Schedar', '平静な男性'],
+  ['Achird', '親しみやすい男性'], ['Zubenelgenubi', 'くだけた口調の男性'], ['Sadachbia', '生き生きした男性'], ['Sadaltager', '知的な男性']
+];
+const TONE_MARK = { shout: '叫', think: '心', whisper: '小声' };
+const TEMPO_SEC = { slow: 20, normal: 12, fast: 7 };
+const STORY_DEFAULT = { theme: '', genre: 'senior', tell: 'narration', minutes: 25, tempo: 'normal', notes: '', useChars: true, lessons: 5, lessonWord: 'habit', hero: '', mentor: '', capStyle: 'bottom', cards: true };
+const FONT_STAGE = '"Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", sans-serif';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -25,6 +41,8 @@ const state = {
   busyScenes: new Set()
 };
 const assetCache = new Map(); // fileId -> Promise<{url, blob}>
+const isStory = () => state.project?.kind === 'story';
+const voiceOptions = sel => VOICES.map(([id, d]) => `<option value="${id}" ${id === sel ? 'selected' : ''}>${id}（${d}）</option>`).join('');
 
 /* ---------- 共通 ---------- */
 function gasUrl() { return localStorage.getItem(LS.url) || CFG.GAS_URL || ''; }
@@ -320,7 +338,7 @@ async function showList() {
     ul.innerHTML = j.projects.map(p => `
       <li data-id="${esc(p.id)}">
         <div><div class="t" tabindex="0">${esc(p.title)}</div>
-          <div class="meta">${p.chars.toLocaleString()}字 ／ 場面${p.scenes} ／ 絵${p.images} ／ 朗読${p.audios} ／ 更新 ${esc(new Date(p.updatedAt).toLocaleString('ja-JP'))}</div></div>
+          <div class="meta"><span class="kind-badge ${p.kind === 'story' ? 'story' : ''}">${p.kind === 'story' ? 'ものがたり' : '小説'}</span>${p.chars.toLocaleString()}字 ／ 場面${p.scenes} ／ 絵${p.images} ／ ${p.kind === 'story' ? '声' : '朗読'}${p.audios} ／ 更新 ${esc(new Date(p.updatedAt).toLocaleString('ja-JP'))}</div></div>
         <button class="btn small ghost open">開く</button>
         <button class="btn small danger del">削除</button>
       </li>`).join('');
@@ -363,8 +381,10 @@ function loadEditor(p, step) {
   $('#styleInput').value = p.style || '';
   $('#styleRefAttach').checked = p.styleRefAttach === true;
   renderStyleRefs();
-  $('#voiceSelect').value = p.voice || 'Kore';
+  $('#voiceSelect').innerHTML = voiceOptions(p.voice || 'Kore');
   $('#subToggle').checked = p.subtitles !== false;
+  loadStoryForm();
+  applyKindUi();
   renderAllowedEffects();
   $$('input[name=audioMode]').forEach(r => { r.checked = r.value === audioMode(); });
   $('#saveState').textContent = '';
@@ -405,7 +425,7 @@ async function flushSave() {
     const j = await api('saveProject', { project: { id: state.project.id, ...f } });
     // 生成中の場面データを上書きしないよう、送った項目だけ反映
     // 場面・人物は画面で編集中のオブジェクトをそのまま使い続ける
-    Object.keys(f).forEach(k => { if (!['scenes', 'characters', 'narrationStarts', 'narrationAligned'].includes(k)) state.project[k] = j.project[k]; });
+    Object.keys(f).forEach(k => { if (!['scenes', 'characters', 'narrationStarts', 'narrationAligned', 'storyOutline'].includes(k)) state.project[k] = j.project[k]; });
     state.project.updatedAt = j.project.updatedAt;
     $('#saveState').textContent = '保存済み';
   } catch (e) {
@@ -492,11 +512,15 @@ async function readTextFile(file) {
 }
 
 function initEditor() {
-  $('#newProjectBtn').addEventListener('click', withBusy($('#newProjectBtn'), async () => {
-    const j = await api('saveProject', { project: { title: '無題の紙芝居' } });
+  $('#newProjectBtn').addEventListener('click', () => $('#newModal').showModal());
+  $$('#newModal .kind-card').forEach(b => b.addEventListener('click', withBusy(b, async () => {
+    const kind = b.dataset.kind;
+    const j = await api('saveProject', { project: { title: kind === 'story' ? '無題のものがたり' : '無題の紙芝居', kind, ...(kind === 'story' ? { storyIdea: { ...STORY_DEFAULT } } : {}) } });
+    $('#newModal').close();
     loadEditor(j.project, 1);
-    $('#projTitle').select();
-  }));
+    if (kind === 'story') $('#stTheme').focus(); else $('#projTitle').select();
+  })));
+  initStoryForm();
   $('#backBtn').addEventListener('click', async () => { await flushSave(); showList(); });
   $('#homeLink').addEventListener('click', async e => { e.preventDefault(); if (state.project) await flushSave(); showList(); });
   $$('.step-tab').forEach(b => b.addEventListener('click', async () => { await flushSave(); goStep(Number(b.dataset.step)); }));
@@ -681,10 +705,426 @@ function initEditor() {
     s.location = $('#smLocation').value;
     s.characters = $('#smChars').value.split(/[、,，]\s*/).map(x => x.trim()).filter(Boolean);
     s.imagePrompt = $('#smPrompt').value;
+    let voiceReset = false;
+    if (isStory() && s.lines) {
+      const next = parseLines($('#smLines').value);
+      if (!next.length) { toast('セリフかナレーションを1つ以上入れてください', true); return; }
+      if (linesSig(next) !== linesSig(s.lines)) {
+        s.lines = next; s.text = next.map(l => l.text).join('\n');
+        if (s.audioFileId) voiceReset = true;
+        s.audioFileId = null; s.duration = 0;
+      } else next.forEach((l, k) => { s.lines[k].tone = l.tone; });
+      pl.loadingFor = null;
+    }
     scheduleSave({ scenes: state.project.scenes });
     $('#sceneModal').close();
     renderScenes();
-    toast('保存しました。「絵を作り直す」で反映されます');
+    renderScript();
+    toast(voiceReset ? 'セリフが変わったので、この場面の声は「声を作る」で作り直してください' : '保存しました。「絵を作り直す」で反映されます');
+  });
+}
+
+/* ---------- ものがたりモード ---------- */
+// 作品の種類に合わせて画面の文言と表示する項目を切り替える
+function applyKindUi() {
+  const story = isStory();
+  $('#novelBox').hidden = story;
+  $('#storyBox').hidden = !story;
+  const tab1 = $('.step-tab[data-step="1"]');
+  $('.lg', tab1).textContent = story ? '物語' : '本文';
+  $('.sm', tab1).textContent = story ? '物語' : '本文';
+  $('#voiceLegend').textContent = story ? 'ナレーションの声' : '朗読の声（AI生成するとき）';
+  $('#voiceNote').hidden = !story;
+  $('#voiceNote').textContent = story && state.project.narratorName
+    ? `一人称の語りなので、ナレーションは「${state.project.narratorName}」の声で読みます。`
+    : '人物のセリフは、下の「登場人物」で人物ごとに声を選べます。';
+  $('.narr').hidden = story;
+  $('.capsync').hidden = story;
+  $('#genAudioBtn').textContent = story ? '声を一括生成' : '朗読を一括生成';
+  $('#subLabel').textContent = story ? 'セリフ・ナレーションを表示' : '字幕を表示';
+  $('#capAdjLabel').firstChild.textContent = story ? 'セリフのタイミング' : '字幕のタイミング';
+  $('#storyPlayOpts').hidden = !story;
+  $('#ytBox').hidden = !story;
+}
+
+function storyIdea() { return { ...STORY_DEFAULT, ...(state.project?.storyIdea || {}) }; }
+
+function loadStoryForm() {
+  const d = storyIdea();
+  $('#stTheme').value = d.theme;
+  $('#stGenre').value = d.genre;
+  $('#stTell').value = d.tell;
+  $('#stMinutes').value = String(d.minutes);
+  $('#stTempo').value = d.tempo;
+  $('#stNotes').value = d.notes;
+  $('#stUseChars').checked = d.useChars !== false;
+  $('#stLessons').value = String(d.lessons);
+  $('#stLessonWord').value = d.lessonWord;
+  $('#stHero').value = d.hero;
+  $('#stMentor').value = d.mentor;
+  $('#capStyle').value = d.capStyle;
+  $('#cardToggle').checked = d.cards !== false;
+  $('#seniorOpts').hidden = d.genre !== 'senior';
+  renderStoryEstimate();
+  renderOutline();
+  renderScript();
+  renderYoutube();
+}
+
+function readStoryForm() {
+  const cur = storyIdea();
+  return {
+    ...cur,
+    theme: $('#stTheme').value.slice(0, 4000), genre: $('#stGenre').value, tell: $('#stTell').value,
+    minutes: Number($('#stMinutes').value) || 5, tempo: $('#stTempo').value,
+    notes: $('#stNotes').value.slice(0, 1500), useChars: $('#stUseChars').checked,
+    lessons: Number($('#stLessons').value) || 5, lessonWord: $('#stLessonWord').value,
+    hero: $('#stHero').value.slice(0, 300), mentor: $('#stMentor').value.slice(0, 300),
+    capStyle: $('#capStyle').value, cards: $('#cardToggle').checked
+  };
+}
+
+function storyPlan(d) {
+  const sec = TEMPO_SEC[d.tempo] || 12;
+  const count = Math.max(4, Math.min(150, Math.round(d.minutes * 60 / sec)));
+  return { count, sec: d.minutes * 60 / count, chars: Math.round(d.minutes * 60 * 6) };
+}
+
+function renderStoryEstimate() {
+  if (!state.project) return;
+  const d = readStoryForm();
+  const { count, sec, chars } = storyPlan(d);
+  const chap = d.genre === 'senior' ? `${d.lessons + 3}章（プロローグ・出会い・教え${d.lessons}つ・エピローグ）` : '3〜8章';
+  $('#stEstimate').textContent = `約${d.minutes}分 ／ ${chap} ／ 絵${count}枚（1枚あたり約${Math.round(sec)}秒） ／ セリフとナレーション 約${chars.toLocaleString()}字`;
+}
+
+const storyRun = { running: false, stop: false };
+
+function storyProgress(text, ratio) {
+  $('#stRun').hidden = ratio == null;
+  if (ratio == null) return;
+  $('#stBar').style.width = Math.round(ratio * 100) + '%';
+  $('#stProgText').textContent = text;
+}
+
+// 設計図・場面を受け取って画面に反映（編集中の入力は残す）
+function takeStoryProject(np) {
+  const p = state.project;
+  ['scenes', 'characters', 'storyOutline', 'narratorName', 'text', 'captions', 'audioMode', 'kind'].forEach(k => { p[k] = np[k]; });
+  if (np.title && np.title !== p.title) { p.title = np.title; $('#projTitle').value = np.title; }
+  pl.loadingFor = null;
+  renderChars();
+  renderOutline();
+  renderScript();
+  renderYoutube();
+  applyKindUi();
+}
+
+// 章を順に書く。from 以降の章のうち、only が指定されていればその章だけ
+async function writeChapters(list) {
+  const o = state.project.storyOutline;
+  for (let n = 0; n < list.length; n++) {
+    if (storyRun.stop) return false;
+    const ci = list[n];
+    const ch = o.chapters[ci];
+    storyProgress(`脚本を書いています… ${ci + 1}/${o.chapters.length}章「${ch.label} ${ch.title}」（1章 30秒〜1分半）`, (n + 0.15) / (list.length + 0.15));
+    let j;
+    try { j = await api('storyChapter', { projectId: state.project.id, chapterIdx: ci }); }
+    catch (e) {
+      // 1回だけやり直す（AIが混み合っているときなど）
+      if (storyRun.stop) return false;
+      storyProgress(`${ci + 1}章目をもう一度書いています…（${e.message.slice(0, 40)}）`, (n + 0.15) / (list.length + 0.15));
+      j = await api('storyChapter', { projectId: state.project.id, chapterIdx: ci });
+    }
+    takeStoryProject(j.project);
+  }
+  return true;
+}
+
+function writtenChapters() {
+  return new Set((state.project.scenes || []).map(s => s.ch || 0));
+}
+
+async function runStory(kind, ci) {
+  if (storyRun.running) return;
+  const p = state.project;
+  const d = readStoryForm();
+  const hasMedia = (p.scenes || []).some(s => s.imageFileId || s.audioFileId);
+  if (kind === 'all' && p.scenes?.length && !confirm('物語を作り直すと、いまの設計図・脚本と生成済みの絵・声は削除されます（登場人物は残ります）。続けますか？')) return;
+  if (kind === 'rewrite' && !confirm(`設計図はそのままで、脚本を全部書き直します。${hasMedia ? '生成済みの絵・声は削除されます。' : ''}続けますか？`)) return;
+  if (kind === 'chapter') {
+    const ch = p.storyOutline.chapters[ci];
+    const media = (p.scenes || []).some(s => (s.ch || 0) === ci && (s.imageFileId || s.audioFileId));
+    if (!confirm(`${ci + 1}章「${ch.label} ${ch.title}」を書き直します。${media ? 'この章の絵・声は削除されます。' : ''}続けますか？`)) return;
+  }
+  storyRun.running = true; storyRun.stop = false;
+  const btns = ['#storyBtn', '#stRewriteBtn', '#stResumeBtn'];
+  btns.forEach(b => { $(b).disabled = true; });
+  $$('.ol-redo').forEach(b => { b.disabled = true; });
+  $('#stStop').disabled = false; $('#stStop').textContent = '止める';
+  try {
+    state.project.storyIdea = d;
+    scheduleSave({ storyIdea: d });
+    await flushSave();
+    let list;
+    if (kind === 'all') {
+      storyProgress('物語の設計図（章立て・登場人物）を作っています…（30秒〜1分）', 0.03);
+      const j = await api('storyOutline', { projectId: p.id });
+      const c = await api('clearStoryScenes', { projectId: p.id });
+      takeStoryProject({ ...j.project, scenes: c.project.scenes, text: '', captions: null });
+      list = state.project.storyOutline.chapters.map((x, i) => i);
+    } else if (kind === 'rewrite') {
+      const c = await api('clearStoryScenes', { projectId: p.id });
+      takeStoryProject(c.project);
+      list = state.project.storyOutline.chapters.map((x, i) => i);
+    } else if (kind === 'resume') {
+      const done = writtenChapters();
+      list = state.project.storyOutline.chapters.map((x, i) => i).filter(i => !done.has(i));
+    } else list = [ci];
+    const ok = await writeChapters(list);
+    const got = state.project.scenes.length;
+    if (ok) {
+      storyProgress('できました', 1);
+      toast(kind === 'chapter' ? `${ci + 1}章を書き直しました` : `「${state.project.title}」${got}場面ができました。脚本を確かめたら「絵と声」へ進みましょう`);
+    } else toast('止めました。「まだ書いていない章を書く」で続きから書けます');
+  } catch (e) {
+    toast(e.message + (state.project.storyOutline ? '（「まだ書いていない章を書く」で続きから書けます）' : ''), true);
+  } finally {
+    storyRun.running = false;
+    btns.forEach(b => { $(b).disabled = false; });
+    setTimeout(() => { if (!storyRun.running) storyProgress('', null); }, 2500);
+    renderOutline();
+  }
+}
+
+function initStoryForm() {
+  const save = () => {
+    if (!state.project) return;
+    state.project.storyIdea = readStoryForm();
+    scheduleSave({ storyIdea: state.project.storyIdea });
+    renderStoryEstimate();
+  };
+  ['#stTheme', '#stNotes', '#stHero', '#stMentor'].forEach(sel => $(sel).addEventListener('input', save));
+  ['#stTell', '#stMinutes', '#stTempo', '#stUseChars', '#stLessons', '#stLessonWord'].forEach(sel => $(sel).addEventListener('change', save));
+  $('#stGenre').addEventListener('change', () => {
+    const senior = $('#stGenre').value === 'senior';
+    $('#seniorOpts').hidden = !senior;
+    // シニアの人生物語は、YouTubeの漫画物語に合わせた初期値にする
+    if (senior) {
+      $('#stTell').value = 'narration';
+      if (Number($('#stMinutes').value) < 15) $('#stMinutes').value = '25';
+      $('#capStyle').value = 'bottom';
+      $('#cardToggle').checked = true;
+    }
+    save();
+  });
+  bindMic($('#micTheme'), $('#stTheme'), $('#interimTheme'));
+  $('#storyBtn').addEventListener('click', () => runStory('all'));
+  $('#stRewriteBtn').addEventListener('click', () => runStory('rewrite'));
+  $('#stResumeBtn').addEventListener('click', () => runStory('resume'));
+  $('#stStop').addEventListener('click', () => { storyRun.stop = true; $('#stStop').disabled = true; $('#stStop').textContent = 'この章を書き終えたら止めます'; });
+  $('#toStep2Btn').addEventListener('click', async () => { await flushSave(); goStep(2); });
+  // 上演の表示（字幕の形・見出し札）
+  ['#capStyle', '#cardToggle'].forEach(sel => $(sel).addEventListener('change', () => {
+    save();
+  }));
+  // YouTube用の文
+  const saveYt = () => {
+    const o = state.project?.storyOutline;
+    if (!o) return;
+    o.title = $('#ytTitle').value;
+    o.description = $('#ytBody').value;
+    o.tags = $('#ytTags').value.split(/[\s,、　]+/).map(t => t.replace(/^#/, '')).filter(Boolean);
+    scheduleSave({ storyOutline: o });
+    $('#ytFull').value = youtubeText();
+  };
+  ['#ytTitle', '#ytBody', '#ytTags'].forEach(sel => $(sel).addEventListener('input', saveYt));
+  const copy = async (text, msg) => {
+    try { await navigator.clipboard.writeText(text); toast(msg); }
+    catch (e) { toast('コピーできませんでした。文を選んでコピーしてください', true); }
+  };
+  $('#ytCopyTitle').addEventListener('click', () => copy($('#ytTitle').value, 'タイトルをコピーしました'));
+  $('#ytCopy').addEventListener('click', () => copy($('#ytFull').value, '説明文をコピーしました'));
+}
+
+// 設計図（章立て）の一覧。見出し・あらすじは直せる
+function renderOutline() {
+  const o = isStory() ? state.project.storyOutline : null;
+  $('#outlineBox').hidden = !o;
+  if (!o) return;
+  const scenes = state.project.scenes || [];
+  const done = writtenChapters();
+  $('#stResumeBtn').hidden = o.chapters.every((c, i) => done.has(i));
+  $('#outlineList').innerHTML = o.chapters.map((c, i) => {
+    const n = scenes.filter(s => (s.ch || 0) === i).length;
+    return `<div class="ol-item" data-i="${i}">
+      <div class="ol-head">
+        <span class="ol-no">${i + 1}</span>
+        <input class="ol-label" value="${esc(c.label)}" maxlength="20" aria-label="${i + 1}章の番号">
+        <input class="ol-title" value="${esc(c.title)}" maxlength="40" aria-label="${i + 1}章の見出し">
+        <span class="ol-meta">${done.has(i) ? `${n}場面` : `<em>未作成</em>（${c.scenes}場面の予定）`}</span>
+        <button class="btn small ghost ol-redo" type="button" ${storyRun.running ? 'disabled' : ''}>${done.has(i) ? 'この章を書き直す' : 'この章を書く'}</button>
+      </div>
+      <textarea class="ol-plot" rows="2" maxlength="800" aria-label="${i + 1}章のあらすじ">${esc(c.plot)}</textarea>
+    </div>`;
+  }).join('');
+  $$('#outlineList .ol-item').forEach(el => {
+    const i = Number(el.dataset.i);
+    const c = o.chapters[i];
+    const upd = () => {
+      c.label = $('.ol-label', el).value; c.title = $('.ol-title', el).value; c.plot = $('.ol-plot', el).value;
+      scheduleSave({ storyOutline: o });
+      pl.loadingFor = null;
+      renderScriptHeads();
+      $('#ytFull').value = youtubeText();
+    };
+    ['.ol-label', '.ol-title', '.ol-plot'].forEach(sel => $(sel, el).addEventListener('input', upd));
+    $('.ol-redo', el).addEventListener('click', async () => { await flushSave(); runStory('chapter', i); });
+  });
+}
+
+function chapterOf(i) {
+  const p = state.project;
+  const s = p.scenes[i];
+  const o = p.storyOutline;
+  if (!s || !o || i === 0) return null;
+  const ci = s.ch || 0;
+  if ((p.scenes[i - 1].ch || 0) === ci) return null;
+  const c = o.chapters[ci];
+  return c ? { label: c.label, title: c.title } : null;
+}
+
+// 脚本の一覧（章ごとに見出し。場面をクリックすると編集）
+function renderScript() {
+  const box = $('#scriptView');
+  if (!box) return;
+  const scenes = isStory() ? (state.project.scenes || []) : [];
+  const o = state.project?.storyOutline;
+  $('#scriptFoot').hidden = !scenes.length;
+  if (!scenes.length) { box.innerHTML = '<p class="empty">まだ脚本がありません。上の条件を決めて「AIで物語を作る」を押してください。</p>'; return; }
+  box.innerHTML = scenes.map((s, i) => {
+    const ci = s.ch || 0;
+    const head = o && (i === 0 || (scenes[i - 1].ch || 0) !== ci) && o.chapters[ci]
+      ? `<h4 class="sc-chap" data-ch="${ci}"></h4>` : '';
+    return `${head}
+    <section class="sc" data-i="${i}">
+      <header><b>場面${i + 1}</b><span>${esc(s.summary)}</span><button class="btn small ghost sc-edit">編集</button></header>
+      ${(s.lines || []).map(l => l.speaker === NARRATOR
+        ? `<p class="ln narr">${esc(l.text)}</p>`
+        : `<p class="ln"><b style="color:${KamiBubble.colorOf(l.speaker)}">${esc(l.speaker)}${l.tone && TONE_MARK[l.tone] ? `<small>（${TONE_MARK[l.tone]}）</small>` : ''}</b><span>${esc(l.text)}</span></p>`).join('')}
+    </section>`;
+  }).join('');
+  renderScriptHeads();
+  $$('.sc', box).forEach(sec => $('.sc-edit', sec).addEventListener('click', () => openSceneModal(Number(sec.dataset.i))));
+}
+
+function renderScriptHeads() {
+  const o = state.project?.storyOutline;
+  if (!o) return;
+  $$('#scriptView .sc-chap').forEach(h => {
+    const c = o.chapters[Number(h.dataset.ch)];
+    if (c) h.innerHTML = `<span>${esc(c.label)}</span>${esc(c.title)}`;
+  });
+}
+
+/* ---------- YouTube用の文（タイトル・説明文・目次・ハッシュタグ） ---------- */
+function stamp(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function youtubeText() {
+  const p = state.project;
+  const o = p?.storyOutline;
+  if (!o) return '';
+  const scenes = p.scenes || [];
+  const times = sceneTimes();
+  const marks = [];
+  scenes.forEach((s, i) => {
+    const ci = s.ch || 0;
+    if (i > 0 && (scenes[i - 1].ch || 0) === ci) return;
+    const c = o.chapters[ci];
+    if (c) marks.push(`${stamp(i === 0 ? 0 : times[i].from)} ${[c.label, c.title].filter(Boolean).join('　')}`);
+  });
+  const tags = (o.tags || []).map(t => '#' + t).join(' ');
+  return [
+    (o.description || '').trim(),
+    marks.length >= 3 ? '▼目次\n' + marks.join('\n') : '',
+    '※この物語はフィクションです。',
+    tags
+  ].filter(Boolean).join('\n\n');
+}
+
+function renderYoutube() {
+  const o = isStory() ? state.project.storyOutline : null;
+  if (!o) {
+    $('#ytTitle').value = $('#ytBody').value = $('#ytTags').value = $('#ytFull').value = '';
+    $('#ytNote').textContent = 'AIで物語を作ると、ここにYouTube用の文ができます。';
+    return;
+  }
+  if (document.activeElement !== $('#ytTitle')) $('#ytTitle').value = o.title || state.project.title || '';
+  if (document.activeElement !== $('#ytBody')) $('#ytBody').value = o.description || '';
+  if (document.activeElement !== $('#ytTags')) $('#ytTags').value = (o.tags || []).map(t => '#' + t).join(' ');
+  $('#ytFull').value = youtubeText();
+  const scenes = state.project.scenes || [];
+  const left = scenes.filter(s => !s.duration).length;
+  $('#ytNote').textContent = !scenes.length ? '脚本ができると目次が付きます。'
+    : left ? `声がまだない場面が${left}あるため、目次の時刻は文字数からの目安です。` : '目次の時刻は、生成した声の長さから計算しています。';
+}
+
+// 「名前（叫）：セリフ」の形 ⇄ 行データ
+function linesToEdit(lines) {
+  return (lines || []).map(l => `${l.speaker}${l.tone && TONE_MARK[l.tone] ? `（${TONE_MARK[l.tone]}）` : ''}：${l.text}`).join('\n');
+}
+
+function parseLines(text) {
+  const rev = Object.fromEntries(Object.entries(TONE_MARK).map(([k, v]) => [v, k]));
+  return String(text || '').split('\n').map(x => x.trim()).filter(Boolean).map(row => {
+    const m = /^([^：:「]{1,30}?)(?:[（(](叫|心|小声)[）)])?\s*[：:]\s*(.+)$/.exec(row);
+    const sp = m ? m[1].trim() : NARRATOR;
+    const t = (m ? m[3] : row).replace(/^[「『]|[」』]$/g, '').trim();
+    return { speaker: /^(ナレーション|語り|ナレ)$/.test(sp) ? NARRATOR : sp, text: t, tone: m && m[2] ? rev[m[2]] : 'normal' };
+  }).filter(l => l.text);
+}
+
+function linesSig(lines) { return (lines || []).map(l => l.speaker + '\u0001' + l.text).join('\u0002'); }
+
+// 短い文はひとつの吹き出しにまとめ、長い文だけ区切る
+function storySegments(text, maxLen) {
+  const out = [];
+  capSegments(text, maxLen).forEach(g => {
+    const last = out[out.length - 1];
+    if (last && (last.text + g.text).length <= maxLen) last.text += g.text;
+    else out.push({ text: g.text, major: true });
+  });
+  return out;
+}
+
+// 吹き出しの表示時刻：行ごとの時刻（声の生成時に記録）＋行の中は声の間に合わせる
+function buildStoryCaptions(maxLen) {
+  return state.project.scenes.map((s, i) => {
+    const lines = s.lines || [];
+    if (!lines.length) return [];
+    const b = pl.buffers[i];
+    const dur = b ? b.duration : sceneDur(s);
+    const env = b ? envelope(b.getChannelData(0), b.sampleRate) : null;
+    const timed = b && lines.every(l => isFinite(l.from) && isFinite(l.to) && l.to > l.from);
+    const total = lines.reduce((a, l) => a + l.text.length + 4, 0) || 1;
+    const slots = {};
+    let acc = 0;
+    const out = [];
+    lines.forEach(l => {
+      if (l.speaker !== NARRATOR && !(l.speaker in slots)) slots[l.speaker] = Object.keys(slots).length;
+      let from, to;
+      if (timed) { from = l.from; to = l.to; }
+      else { from = dur * acc / total; acc += l.text.length + 4; to = dur * acc / total; }
+      const segs = storySegments(l.text, maxLen);
+      const parts = segs.length > 1 ? alignCaps(segs, timed ? env : null, from, to).map(c => ({ ...c, from: c.from + from, to: c.to + from }))
+        : [{ text: segs[0]?.text || l.text, from, to }];
+      parts.forEach(c => out.push({ ...c, speaker: l.speaker, tone: l.tone || 'normal', slot: slots[l.speaker] || 0 }));
+    });
+    return out;
   });
 }
 
@@ -721,7 +1161,7 @@ function renderChars() {
   const list = $('#charList');
   const chars = state.project?.characters || [];
   if (!chars.length) {
-    list.innerHTML = '<p class="empty">登場人物はまだいません。本文をAIで場面に分けると自動で書き出されます。</p>';
+    list.innerHTML = `<p class="empty">登場人物はまだいません。${isStory() ? 'AIで物語を作ると自動で書き出されます。先に登録しておくと、その人物で物語を作ります。' : '本文をAIで場面に分けると自動で書き出されます。'}</p>`;
     return;
   }
   list.innerHTML = chars.map((c, i) => `
@@ -730,6 +1170,7 @@ function renderChars() {
       <div>
         <label>名前<input class="c-name" value="${esc(c.name)}" maxlength="30"></label>
         <label>特徴（髪型・服装・体格・性格など）<textarea class="c-feat">${esc(c.features)}</textarea></label>
+        ${isStory() ? `<label>この人物の声<select class="c-voice"><option value="">（おまかせ）</option>${voiceOptions(c.voice || '')}</select></label>` : ''}
         <div class="row">
           <button class="btn small ghost c-mic">音声で追記</button>
           <button class="btn small ghost c-up">三面図をアップロード</button>
@@ -744,6 +1185,11 @@ function renderChars() {
     const c = chars[i];
     $('.c-name', el).addEventListener('input', e => { c.name = e.target.value; scheduleSave({ characters: chars }); });
     $('.c-feat', el).addEventListener('input', e => { c.features = e.target.value; scheduleSave({ characters: chars }); });
+    $('.c-voice', el)?.addEventListener('change', e => {
+      c.voice = e.target.value;
+      scheduleSave({ characters: chars });
+      if (state.project.scenes?.some(s => s.audioFileId && (s.lines || []).some(l => l.speaker === c.name))) toast(`声を変えた場合、「${c.name}」が話す場面の声を作り直すと反映されます`);
+    });
     bindMic($('.c-mic', el), $('.c-feat', el));
     $('.c-del', el).addEventListener('click', () => {
       if (!confirm(`「${c.name || '名前なし'}」を削除しますか？`)) return;
@@ -833,7 +1279,7 @@ function renderScenes() {
   const body = $('#sceneBody');
   const scenes = p?.scenes || [];
   if (!scenes.length) {
-    body.innerHTML = '<tr><td colspan="6" class="empty">まだ場面がありません。「本文」でAIに場面を分けてもらいましょう。</td></tr>';
+    body.innerHTML = `<tr><td colspan="6" class="empty">まだ場面がありません。${isStory() ? '「物語」でAIに物語を作ってもらいましょう。' : '「本文」でAIに場面を分けてもらいましょう。'}</td></tr>`;
     $('#timeline').innerHTML = '';
     $('#timelineNote').textContent = '';
     renderNarrInfo();
@@ -842,6 +1288,7 @@ function renderScenes() {
   const tcls = { '9:16': 'p916', '1:1': 'p11' }[p.aspect] || '';
   const times = sceneTimes();
   const narr = audioMode() === 'narration';
+  const story = isStory();
   body.innerHTML = scenes.map((s, i) => {
     const { from, dur: d, est } = times[i];
     const busy = state.busyScenes.has(i);
@@ -851,15 +1298,16 @@ function renderScenes() {
       <td><div class="thumb ${tcls}" data-fid="${esc(s.imageFileId || '')}">${s.imageFileId ? '…' : '未生成'}</div></td>
       <td><div class="sum">${esc(s.summary)}</div>
         <div class="tags">${esc(s.location || '')}${s.characters?.length ? '／' + esc(s.characters.join('、')) : ''}${s.bgRefFileId ? '／背景参考あり' : ''}</div>
-        <div class="ex">${esc((s.text || '').slice(0, 120))}</div>
-        <div>${narr ? '' : s.audioFileId ? `<span class="ok-mark">● 朗読あり（${s.audioSource === 'upload' ? '取り込み' : 'AI生成'}）</span>` : ''}</div></td>
+        ${story ? `<ul class="ex-lines">${(s.lines || []).slice(0, 4).map(l => `<li><b style="color:${l.speaker === NARRATOR ? 'var(--muted)' : KamiBubble.colorOf(l.speaker)}">${esc(l.speaker === NARRATOR ? '語り' : l.speaker)}</b>${esc(l.text.slice(0, 40))}</li>`).join('')}${(s.lines || []).length > 4 ? `<li class="more">ほか${s.lines.length - 4}行</li>` : ''}</ul>`
+          : `<div class="ex">${esc((s.text || '').slice(0, 120))}</div>`}
+        <div>${narr ? '' : s.audioFileId ? `<span class="ok-mark">● ${story ? '声あり' : `朗読あり（${s.audioSource === 'upload' ? '取り込み' : 'AI生成'}）`}</span>` : ''}</div></td>
       <td><select class="eff" aria-label="場面${i + 1}の動き">${Object.entries(EFFECTS).map(([k, v]) => `<option value="${k}" ${s.effect === k ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
       <td><div class="ops">${busy ? '<span class="busy">生成中…</span>' : `
         <button class="btn small ghost r-img">${s.imageFileId ? '絵を作り直す' : '絵を作る'}</button>
-        ${narr ? '' : `<button class="btn small ghost r-tts">${s.audioFileId ? '朗読を作り直す' : '朗読を作る'}</button>
+        ${narr ? '' : story ? `<button class="btn small ghost r-tts">${s.audioFileId ? '声を作り直す' : '声を作る'}</button>` : `<button class="btn small ghost r-tts">${s.audioFileId ? '朗読を作り直す' : '朗読を作る'}</button>
         <button class="btn small ghost r-imp">朗読を取り込む</button>`}
         <button class="btn small ghost r-bg">背景参考を入れる</button>
-        <button class="btn small ghost r-edit">描写を編集</button>`}</div></td>
+        <button class="btn small ghost r-edit">${story ? 'セリフ・描写を編集' : '描写を編集'}</button>`}</div></td>
     </tr>`;
   }).join('');
 
@@ -889,6 +1337,7 @@ function renderScenes() {
   renderTimeline();
   renderNarrInfo();
   renderCapSyncInfo();
+  if (story) { renderScript(); renderYoutube(); }
 }
 
 async function loadThumbs(root) {
@@ -922,7 +1371,8 @@ function renderTimeline() {
     $('#timelineNote').textContent = `全${scenes.length}場面・${fmtTime(total)}（取り込んだ朗読ファイル）。` + (state.project.narration.aligned === 'ratio' ? '斜線は文字数の比率で仮に割り振った区切りです。' : '');
   } else {
     const done = scenes.filter(s => s.duration).length;
-    $('#timelineNote').textContent = `全${scenes.length}場面・約${fmtTime(total)}（朗読あり ${done}/${scenes.length}）。斜線は朗読がなく、文字数からの目安です。`;
+    const w = isStory() ? '声' : '朗読';
+    $('#timelineNote').textContent = `全${scenes.length}場面・約${fmtTime(total)}（${w}あり ${done}/${scenes.length}）。斜線は${w}がなく、文字数からの目安です。`;
   }
 }
 
@@ -935,6 +1385,13 @@ function openSceneModal(i) {
   $('#smChars').value = (s.characters || []).join('、');
   $('#smPrompt').value = s.imagePrompt || '';
   $('#smText').textContent = s.text || '';
+  const story = isStory() && Array.isArray(s.lines);
+  $('#smLinesWrap').hidden = !story;
+  $('#smTextWrap').hidden = story;
+  if (story) {
+    $('#smLines').value = linesToEdit(s.lines);
+    $('#smSpeakers').textContent = '話す人：' + [NARRATOR, ...(state.project.characters || []).map(c => c.name).filter(Boolean)].join('、');
+  }
   $('#sceneModal').showModal();
 }
 
@@ -1199,7 +1656,7 @@ async function genOne(kind, i) {
 async function runBatch(kind) {
   if (state.running) return;
   const scenes = state.project?.scenes || [];
-  if (!scenes.length) { toast('先に本文をAIで場面に分けてください', true); return; }
+  if (!scenes.length) { toast(isStory() ? '先にAIで物語を作ってください' : '先に本文をAIで場面に分けてください', true); return; }
   const key = kind === 'image' ? 'imageFileId' : 'audioFileId';
   let targets = scenes.map((s, i) => i).filter(i => !scenes[i][key]);
   if (kind === 'audio' && audioMode() === 'narration') {
@@ -1207,9 +1664,9 @@ async function runBatch(kind) {
     return;
   }
   if (!targets.length) {
-    if (!confirm(`すべての場面で${kind === 'image' ? '絵' : '朗読'}が生成済みです。全部作り直しますか？（AIを${scenes.length}回使います）`)) return;
+    if (!confirm(`すべての場面で${kind === 'image' ? '絵' : isStory() ? '声' : '朗読'}が生成済みです。全部作り直しますか？（AIを${scenes.length}回使います）`)) return;
     targets = scenes.map((s, i) => i);
-  } else if (!confirm(`${kind === 'image' ? '絵' : '朗読'}がない${targets.length}場面を生成します（AIを約${kind === 'image' ? targets.length : targets.reduce((a, i) => a + Math.ceil((scenes[i].text || '').length / 600), 0)}回使います）。よろしいですか？`)) return;
+  } else if (!confirm(`${kind === 'image' ? '絵' : isStory() ? '声' : '朗読'}がない${targets.length}場面を生成します（AIを約${kind === 'image' ? targets.length : isStory() ? targets.reduce((a, i) => a + (scenes[i].lines || []).length, 0) : targets.reduce((a, i) => a + Math.ceil((scenes[i].text || '').length / 600), 0)}回使います）。よろしいですか？`)) return;
   state.running = true; state.stop = false;
   $('#genImagesBtn').disabled = $('#genAudioBtn').disabled = true;
   $('#stopBtn').hidden = false; $('#stopBtn').textContent = '止める';
@@ -1218,7 +1675,7 @@ async function runBatch(kind) {
   for (let n = 0; n < targets.length; n++) {
     if (state.stop) break;
     $('#progressBar').style.width = (n / targets.length * 100) + '%';
-    $('#progressText').textContent = `${kind === 'image' ? '絵' : '朗読'}を生成中… ${n + 1}/${targets.length}（場面${targets[n] + 1}）`;
+    $('#progressText').textContent = `${kind === 'image' ? '絵' : isStory() ? '声' : '朗読'}を生成中… ${n + 1}/${targets.length}（場面${targets[n] + 1}）`;
     (await genOne(kind, targets[n])) ? ok++ : ng++;
   }
   $('#progressBar').style.width = '100%';
@@ -1369,6 +1826,7 @@ async function buildAllCaptions(mode, maxLen) {
    区間は「前の区間で確定した最後の字幕」から始めるので、ずれが積み重ならない。
    AIの時刻は、近くにある声の立ち上がり（無音→有音）に吸着させて精度を上げる。 */
 function capMaxLen() {
+  if (isStory()) return 40; // 吹き出しは折り返して3行ほどに収める
   const [W, H] = CANVAS[state.project.aspect] || CANVAS['16:9'];
   return W > H ? 34 : 18;
 }
@@ -1584,7 +2042,8 @@ async function preparePlayer() {
   renderCueList();
   if (!scenes.length) { $('#prepStatus').textContent = '場面がありません'; drawCard('場面がまだありません'); return; }
   const mode = audioMode();
-  const sig = p.id + ':' + mode + ':' + (mode === 'narration' ? p.narration.uploadId + '@' + p.narration.starts.join(',') : '') + ':' + scenes.map(s => (s.imageFileId || '') + (s.audioFileId || '')).join('|') + ':' + (p.captions ? p.captions.at : '');
+  const sig = p.id + ':' + mode + ':' + (mode === 'narration' ? p.narration.uploadId + '@' + p.narration.starts.join(',') : '') + ':' + scenes.map(s => (s.imageFileId || '') + (s.audioFileId || '')).join('|') + ':' + (p.captions ? p.captions.at : '')
+    + ':' + (isStory() ? scenes.map(s => (s.lines || []).map(l => (l.tone || 'n')[0] + l.speaker + l.text.length).join(',')).join('|') : '');
   if (pl.ready && pl.loadingFor === sig) { $('#prepStatus').textContent = '準備できています'; return; }
   pl.ready = false; pl.loadingFor = sig;
   if (!pl.ctx) pl.ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1638,21 +2097,25 @@ async function preparePlayer() {
     }
     if (pl.loadingFor !== sig) return;
   }
-  $('#prepStatus').textContent = '字幕を朗読の間に合わせています…';
-  pl.caps = savedCaptions(capLen) || await buildAllCaptions(mode, capLen);
+  $('#prepStatus').textContent = isStory() ? '吹き出しを声に合わせています…' : '字幕を朗読の間に合わせています…';
+  pl.story = isStory();
+  pl.caps = pl.story ? buildStoryCaptions(capLen) : (savedCaptions(capLen) || await buildAllCaptions(mode, capLen));
   if (pl.loadingFor !== sig) return;
   pl.ready = true;
   const noImg = scenes.filter((s, i) => !pl.images[i]).length;
   const noAud = mode === 'narration' ? 0 : scenes.filter((s, i) => !pl.buffers[i]).length;
   $('#prepStatus').textContent = (noImg || noAud)
-    ? `準備できました（絵なし${noImg}場面・朗読なし${noAud}場面は、文字の札と無音で進みます）`
+    ? `準備できました（絵なし${noImg}場面・${pl.story ? '声' : '朗読'}なし${noAud}場面は、文字の札と無音で進みます）`
     : '準備できました';
   $('#playBtn').disabled = $('#recordBtn').disabled = false;
 }
 
 function renderCueList() {
   const scenes = state.project?.scenes || [];
-  $('#cueList').innerHTML = scenes.map((s, i) => `<li data-i="${i}"><b>${i + 1}</b><span>${esc(s.summary)}</span></li>`).join('');
+  $('#cueList').innerHTML = scenes.map((s, i) => {
+    const ch = isStory() ? (i === 0 ? state.project.storyOutline?.chapters?.[s.ch || 0] : chapterOf(i)) : null;
+    return `<li data-i="${i}"><b>${i + 1}</b><span>${ch ? `<em class="cue-ch">${esc(ch.label)} ${esc(ch.title)}</em>` : ''}${esc(s.summary)}</span></li>`;
+  }).join('');
   $$('#cueList li').forEach(li => li.addEventListener('click', () => pl.ready && playFrom(Number(li.dataset.i))));
 }
 
@@ -1723,9 +2186,12 @@ function drawScene(i, p, elapsed, alpha) {
 }
 
 function drawCaption(i, el) {
+  if (pl.story && i === 0) KamiBubble.drawTitle(pl.g, pl.cv.width, pl.cv.height, state.project.title || '', el, FONT_STAGE);
+  else if (pl.story && $('#cardToggle').checked) KamiBubble.drawChapter(pl.g, pl.cv.width, pl.cv.height, chapterOf(i), el, FONT_STAGE);
   if (!$('#subToggle').checked) return;
   const caps = pl.caps[i] || [];
   if (!caps.length) return;
+  if (pl.story) { KamiBubble.draw(pl.g, pl.cv.width, pl.cv.height, caps, el + capOffset(), FONT_STAGE, $('#capStyle').value); return; }
   const t = el + capOffset();
   const cap = t < caps[0].from ? caps[0] : (caps.find(c => t >= c.from && t < c.to) || caps[caps.length - 1]);
   if (!cap) return;
@@ -2105,11 +2571,13 @@ async function exportVideo() {
     for (let i = 0; i < scenes.length; i++) {
       let blob = null;
       if (scenes[i].imageFileId) { try { blob = (await asset(scenes[i].imageFileId)).blob; } catch (e) { } }
-      items.push({ from: timeline[i].from, dur: timeline[i].dur, effect: scenes[i].effect, summary: scenes[i].summary, blob });
+      items.push({ from: timeline[i].from, dur: timeline[i].dur, effect: scenes[i].effect, summary: scenes[i].summary, blob,
+        chapter: pl.story && $('#cardToggle').checked ? chapterOf(i) : null });
     }
     const msg = {
       cmd: 'start', W, H, fps: EXPORT_FPS, fmt, handle, totalDur,
       scenes: items, caps: pl.caps, subtitles: $('#subToggle').checked, capOffset: capOffset(),
+      story: !!pl.story, title: p.title || '', capStyle: $('#capStyle').value,
       audio: { data: audio.data, rate: audio.rate }
     };
     exportWorker = new Worker('export-worker.js');

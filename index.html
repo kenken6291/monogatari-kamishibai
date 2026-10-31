@@ -15,7 +15,7 @@
 <section id="authView" class="auth" hidden>
   <div class="auth-card">
     <h1 class="brand-big">ものがたり<br>紙芝居</h1>
-    <p class="lead">小説を、絵と朗読の紙芝居に。</p>
+    <p class="lead">小説やAIが書く物語を、絵と声の紙芝居に。</p>
 
     <form id="loginForm" class="auth-pane" data-pane="login">
       <h2>ログイン</h2>
@@ -106,6 +106,104 @@
 
       <!-- 1 本文 -->
       <div class="pane" id="pane1">
+       <div id="storyBox" hidden>
+        <fieldset class="box story-form">
+          <legend>どんな物語にするか</legend>
+          <label>テーマ・あらすじのタネ（空のままなら、ジャンルに合わせてAIが考えます）
+            <textarea id="stTheme" rows="5" placeholder="例：定年退職した父が、家族に内緒でキャンピングカーを買ってきた。呆れていた妻と娘が、旅先のある出来事で父を見直す。"></textarea>
+          </label>
+          <div class="tools">
+            <button class="btn ghost mic" id="micTheme">音声で追記</button>
+            <span class="interim" id="interimTheme"></span>
+          </div>
+          <div class="grid4">
+            <label>ジャンル
+              <select id="stGenre">
+                <option value="senior">シニアの人生物語・○つの教え（YouTubeの漫画物語風）</option>
+                <option value="omakase">おまかせ</option>
+                <option value="sukatto">スカッと・逆転劇</option>
+                <option value="kandou">感動・泣ける</option>
+                <option value="comedy">笑える・コメディ</option>
+                <option value="love">恋愛</option>
+                <option value="horror">ホラー・怪談</option>
+                <option value="mystery">ミステリー</option>
+                <option value="mukashi">昔話・民話風</option>
+                <option value="nichijo">日常・ほっこり</option>
+                <option value="kyokun">人生訓・教訓</option>
+              </select>
+            </label>
+            <label>語り口
+              <select id="stTell">
+                <option value="dialog">セリフ中心（漫画動画風）</option>
+                <option value="first">主人公の一人称で語る</option>
+                <option value="balance">セリフと語りを半々</option>
+                <option value="narration">語り中心（紙芝居風）</option>
+              </select>
+            </label>
+            <label>長さ
+              <select id="stMinutes">
+                <option value="3">約3分</option>
+                <option value="5">約5分</option>
+                <option value="10">約10分</option>
+                <option value="15">約15分</option>
+                <option value="20">約20分</option>
+                <option value="25">約25分</option>
+                <option value="30">約30分</option>
+              </select>
+            </label>
+            <label>絵の切り替え
+              <select id="stTempo">
+                <option value="slow">ゆっくり（約20秒ごと）</option>
+                <option value="normal">ふつう（約12秒ごと）</option>
+                <option value="fast">はやい（約7秒ごと）</option>
+              </select>
+            </label>
+          </div>
+          <div class="grid4" id="seniorOpts" hidden>
+            <label>教えの数
+              <select id="stLessons"><option value="3">3つ</option><option value="4">4つ</option><option value="5">5つ</option><option value="6">6つ</option><option value="7">7つ</option></select>
+            </label>
+            <label>教えの呼び方
+              <select id="stLessonWord">
+                <option value="habit">○つ目の習慣</option><option value="important">○つ目の大切なこと</option>
+                <option value="teach">○つ目の教え</option><option value="hint">○つ目のヒント</option>
+                <option value="secret">○つ目の秘訣</option><option value="auto">おまかせ</option>
+              </select>
+            </label>
+            <label class="span2">主人公（空欄ならおまかせ）<input id="stHero" maxlength="300" placeholder="例：大川浩二、65歳。元総務部長。几帳面で、人に頼るのが苦手"></label>
+            <label class="span2">導き役・相手役（空欄ならおまかせ）<input id="stMentor" maxlength="300" placeholder="例：近所の77歳の三上さん。脚立を肩に、ご近所の困りごとを手伝って回っている"></label>
+          </div>
+          <label>そのほかの希望（時代・舞台・結末・見てほしい人など）
+            <textarea id="stNotes" rows="3" maxlength="1500" placeholder="例：舞台は海の見える地方の町。季節は春から秋へ。60代の視聴者向け。統計の数字を使いたいときは、数字と出典をここに書いてください（書いたものだけを使います）。"></textarea>
+          </label>
+          <label class="check"><input type="checkbox" id="stUseChars" checked> 「絵と声の設定」に登録した人物を登場させる</label>
+          <p class="plan-est" id="stEstimate"></p>
+          <div class="pane-foot">
+            <span class="note">AIがまず章立て（設計図）を作り、章ごとに題名・登場人物・絵の指示・セリフとナレーションを書きます。人物ごとに声が変わります。</span>
+            <button class="btn primary" id="storyBtn">AIで物語を作る</button>
+          </div>
+          <div class="st-run" id="stRun" hidden>
+            <div class="progress"><div class="bar" id="stBar"></div><span id="stProgText"></span></div>
+            <button class="btn small ghost" id="stStop" type="button">止める</button>
+          </div>
+        </fieldset>
+        <fieldset class="box" id="outlineBox" hidden>
+          <legend>物語の設計図（章立て）</legend>
+          <p class="note">章の見出しとあらすじは書き換えられます（見出しは上演の「章の見出し札」に出ます）。あらすじを変えたら「この章を書き直す」で脚本に反映します。</p>
+          <div id="outlineList" class="outline-list"></div>
+          <div class="tools">
+            <button class="btn ghost" id="stRewriteBtn" type="button">設計図はそのままで、脚本を全部書き直す</button>
+            <button class="btn ghost" id="stResumeBtn" type="button" hidden>まだ書いていない章を書く</button>
+          </div>
+        </fieldset>
+        <h3 class="sub">脚本</h3>
+        <div id="scriptView" class="script-view"></div>
+        <div class="pane-foot" id="scriptFoot" hidden>
+          <span class="note">セリフは場面ごとに「編集」で直せます。よければ、人物の見た目と声を決めましょう。</span>
+          <button class="btn primary" id="toStep2Btn">絵と声の設定へ</button>
+        </div>
+       </div>
+       <div id="novelBox">
         <div class="tools">
           <label class="btn ghost file-btn">テキストファイルを読み込む<input type="file" id="fileInput" accept=".txt,text/plain" hidden></label>
           <button class="btn ghost mic" id="micNovel">音声で追記</button>
@@ -143,6 +241,7 @@
             <button class="btn primary" id="analyzeBtn">AIで場面に分ける</button>
           </div>
         </fieldset>
+       </div>
       </div>
 
       <!-- 2 設定 -->
@@ -157,7 +256,7 @@
             </div>
           </fieldset>
           <fieldset class="box">
-            <legend>朗読の声（AI生成するとき）</legend>
+            <legend id="voiceLegend">朗読の声（AI生成するとき）</legend>
             <label>声
               <select id="voiceSelect">
                 <option value="Kore">Kore（落ち着いた女性）</option>
@@ -170,6 +269,7 @@
                 <option value="Zephyr">Zephyr（さわやか）</option>
               </select>
             </label>
+            <p class="note" id="voiceNote" hidden></p>
           </fieldset>
         </div>
 
@@ -278,8 +378,17 @@
             </div>
             <button class="btn primary wide" id="fsBtn">全画面で上演</button>
             <p class="note keys">キー操作：スペース＝再生／一時停止、←→＝前後の場面、F＝全画面</p>
-            <label class="check"><input type="checkbox" id="subToggle" checked> 字幕を表示</label>
-            <label class="inline cap-adj">字幕のタイミング
+            <label class="check"><input type="checkbox" id="subToggle" checked> <span id="subLabel">字幕を表示</span></label>
+            <div id="storyPlayOpts" hidden>
+              <label class="inline">セリフの出し方
+                <select id="capStyle">
+                  <option value="bottom">画面の下に字幕（名前つき）</option>
+                  <option value="bubble">漫画の吹き出し</option>
+                </select>
+              </label>
+              <label class="check"><input type="checkbox" id="cardToggle" checked> 章の見出し札を出す</label>
+            </div>
+            <label class="inline cap-adj" id="capAdjLabel">字幕のタイミング
               <select id="capOffset">
                 <option value="0.6">早める（0.6秒）</option>
                 <option value="0.3">少し早める（0.3秒）</option>
@@ -294,6 +403,19 @@
             <ol id="cueList" class="cue-list"></ol>
           </aside>
         </div>
+        <fieldset class="box yt-box" id="ytBox" hidden>
+          <legend>YouTubeに載せる文</legend>
+          <p class="note">タイトル・説明文・目次（章の開始時刻）・ハッシュタグです。目次の時刻は、すべての場面の声ができてから正確になります。書き換えた内容は作品に保存されます。</p>
+          <label>タイトル<input id="ytTitle" maxlength="100"></label>
+          <label>説明文<textarea id="ytBody" rows="6"></textarea></label>
+          <label>ハッシュタグ（空白区切り）<input id="ytTags"></label>
+          <label>そのまま貼れる説明文（目次・ハッシュタグつき）<textarea id="ytFull" rows="12" readonly></textarea></label>
+          <p class="note" id="ytNote"></p>
+          <div class="tools">
+            <button class="btn ghost" id="ytCopyTitle" type="button">タイトルをコピー</button>
+            <button class="btn primary" id="ytCopy" type="button">説明文をコピー</button>
+          </div>
+        </fieldset>
       </div>
     </section>
   </main>
@@ -304,6 +426,16 @@
 <!-- 使い方 -->
 <dialog id="helpModal" class="modal">
   <h2>使い方</h2>
+  <h3 class="howto-h">ものがたりを作る（漫画動画風）</h3>
+  <ol class="howto">
+    <li><b>物語の条件を決める</b>　「新しい作品をつくる」で「ものがたりを作る」を選び、テーマ・ジャンル・語り口・長さを決めて「AIで物語を作る」を押します。AIがまず章立て（設計図）を作り、章ごとに題名・登場人物・セリフ・ナレーションを書きます。</li>
+    <li><b>シニアの人生物語</b>　ジャンル「シニアの人生物語・○つの教え」は、主人公が人生の先輩から教えを1つずつ学ぶ、YouTubeの漫画物語のような構成です（プロローグ→出会い→1つ目〜○つ目の教え→エピローグ）。長さは25分前後、ナレーション中心がおすすめです。</li>
+    <li><b>脚本を直す</b>　設計図の章の見出し・あらすじを直して「この章を書き直す」で、その章だけ作り直せます。場面ごとの「編集」で、セリフを「名前：セリフ」の形で書き直せます。</li>
+    <li><b>人物の見た目と声を決める</b>　「絵と声の設定」で、人物ごとの声・特徴・三面図を決めます。先に人物を登録しておくと、その人物で物語を作ります。</li>
+    <li><b>絵と声を生成して上演する</b>　「絵を一括生成」「声を一括生成」のあと上演すると、人物ごとの声に合わせて字幕（名前つき）か吹き出しが出ます。最初の場面には題名、章の始まりには見出し札が出ます。動画の書き出しにも入ります。</li>
+    <li><b>YouTubeに載せる</b>　「上演・書き出し」の下に、タイトル・説明文・章の目次（開始時刻）・ハッシュタグができます。コピーして貼り付けられます。</li>
+  </ol>
+  <h3 class="howto-h">小説から作る</h3>
   <ol class="howto">
     <li><b>本文を入れる</b>　小説を貼り付けるか、テキストファイルを読み込みます。音声で書き足すこともできます。</li>
     <li><b>AIで場面に分ける</b>　物語の流れから、絵を切り替える場面と枚数をAIが決めます。</li>
@@ -316,6 +448,24 @@
   </ol>
   <p class="note">絵1枚と朗読1場面の生成には、それぞれ数十秒かかります。止めてもそれまでの結果は保存されます。</p>
   <form method="dialog"><button class="btn primary">はじめる</button></form>
+</dialog>
+
+<!-- 新しい作品 -->
+<dialog id="newModal" class="modal wide">
+  <h2>新しい作品をつくる</h2>
+  <div class="kind-choice">
+    <button type="button" class="kind-card" data-kind="story">
+      <b>ものがたりを作る</b>
+      <span class="kind-sub">漫画動画・紙芝居動画風</span>
+      <span>テーマとジャンルを決めると、AIが章立てと脚本を書きます。人物ごとに声が変わり、章の見出し札つきで進みます。「定年後の5つの習慣」のような、YouTubeのシニア向け漫画物語もこちら。</span>
+    </button>
+    <button type="button" class="kind-card" data-kind="novel">
+      <b>小説から作る</b>
+      <span class="kind-sub">朗読紙芝居</span>
+      <span>手元の小説を貼り付けると、AIが場面に分けて絵を描き、朗読と字幕で上演します。朗読音声の取り込みもできます。</span>
+    </button>
+  </div>
+  <form method="dialog" class="modal-actions"><button class="btn ghost">やめる</button></form>
 </dialog>
 
 <!-- 設定 -->
@@ -341,8 +491,12 @@
   <label>あらすじ<input id="smSummary"></label>
   <label>場所<input id="smLocation"></label>
   <label>登場人物（読点区切り）<input id="smChars"></label>
+  <label id="smLinesWrap" hidden>セリフとナレーション（1行に1つ。「名前：セリフ」の形。語りは「ナレーション：」。叫ぶ・心の声・ささやきは「名前（叫）：」「名前（心）：」「名前（小声）：」）
+    <textarea id="smLines" rows="9"></textarea>
+    <span class="note" id="smSpeakers"></span>
+  </label>
   <label>絵の描写（AIへの指示）<textarea id="smPrompt" rows="5"></textarea></label>
-  <details><summary>この場面の本文</summary><p id="smText" class="scene-text"></p></details>
+  <details id="smTextWrap"><summary>この場面の本文</summary><p id="smText" class="scene-text"></p></details>
   <div class="modal-actions">
     <button class="btn ghost" id="smCancel" type="button">閉じる</button>
     <button class="btn primary" id="smSave" type="button">保存</button>
@@ -376,6 +530,7 @@
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script src="config.js"></script>
+<script src="lib/bubble.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

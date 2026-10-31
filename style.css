@@ -327,6 +327,66 @@ label.inline select { width: auto; margin: 0; }
   .who { margin-left: 0; }
   .butai-window { border-width: 12px; border-top-width: 6px; }
 }
+/* ものがたりモード */
+.story-form .tools { margin: -.2rem 0 .2rem; }
+.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0 1rem; }
+.grid4 label { margin: .5em 0; }
+.script-view { display: grid; gap: .6rem; }
+.script-view .empty { padding: 1.5rem 1rem; }
+.sc { background: var(--sheet); border: 1.5px solid var(--line); border-left: 5px solid var(--yamabuki); border-radius: 6px; padding: .6rem 1rem .7rem; }
+.sc header { display: flex; align-items: baseline; gap: .7rem; margin-bottom: .3rem; }
+.sc header b { white-space: nowrap; color: var(--ai); }
+.sc header span { flex: 1; color: var(--muted); font-size: .9rem; }
+.sc .ln { margin: .25em 0; display: grid; grid-template-columns: 7.5em 1fr; gap: .6rem; }
+.sc .ln b { font-size: .9rem; overflow-wrap: anywhere; }
+.sc .ln b small { font-weight: 500; }
+.sc .ln.narr { display: block; background: #fbf6e8; border: 1px solid #e6dcc2; border-radius: 4px; padding: .3em .7em; font-size: .93rem; color: #4a3f2c; }
+.scenes .ex-lines { list-style: none; margin: .2rem 0; padding: 0; font-size: .82rem; max-width: 34em; }
+.scenes .ex-lines li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scenes .ex-lines b { margin-right: .5em; }
+.scenes .ex-lines .more { color: var(--muted); }
+.kind-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+.kind-card { font: inherit; text-align: left; cursor: pointer; background: var(--sheet); color: var(--ink); border: 2px solid var(--ink); border-radius: 6px; padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .4rem; box-shadow: 4px 4px 0 var(--line); }
+.kind-card:hover:not(:disabled) { background: var(--ai-soft); box-shadow: 4px 4px 0 var(--wood); }
+.kind-card b { font-family: var(--display); font-weight: 400; font-size: 1.3rem; }
+.kind-card .kind-sub { font-size: .8rem; font-weight: 700; color: var(--wood); }
+.kind-card span:last-child { font-size: .9rem; color: var(--muted); }
+.kind-badge { display: inline-block; font-size: .75rem; font-weight: 700; border: 1.5px solid var(--muted); color: var(--muted); border-radius: 3px; padding: 0 .4em; margin-right: .5em; line-height: 1.5; }
+.kind-badge.story { border-color: var(--wood); color: #fff; background: var(--wood); }
+.howto-h { margin-top: 1rem; font-size: 1rem; color: var(--wood); }
+#smSpeakers { display: block; }
+@media (max-width: 860px) {
+  .grid4 { grid-template-columns: 1fr 1fr; }
+  .kind-choice { grid-template-columns: 1fr; }
+  .sc .ln { grid-template-columns: 1fr; gap: 0; }
+  .scenes .ex-lines { max-width: none; }
+}
+/* ものがたりモード：設計図・章・YouTube */
+.grid4 .span2 { grid-column: span 2; }
+.story-form textarea#stNotes { min-height: 4.5em; }
+.st-run { display: flex; align-items: center; gap: .8rem; margin-top: .6rem; }
+.st-run .progress { flex: 1; }
+.outline-list { display: grid; gap: .6rem; margin: .4rem 0 .8rem; }
+.ol-item { background: var(--sheet); border: 1.5px solid var(--line); border-radius: 6px; padding: .5rem .7rem; }
+.ol-head { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.ol-no { font-family: var(--display); color: var(--wood); min-width: 1.6em; text-align: center; }
+.ol-head input { margin: 0; }
+.ol-label { width: 9em; font-weight: 700; }
+.ol-title { flex: 1; min-width: 12em; font-weight: 700; }
+.ol-meta { font-size: .82rem; color: var(--muted); white-space: nowrap; }
+.ol-meta em { font-style: normal; color: var(--danger); font-weight: 700; }
+.ol-plot { margin: .4rem 0 0; width: 100%; font-size: .9rem; }
+.sc-chap { margin: 1rem 0 .1rem; font-size: 1.05rem; display: flex; align-items: center; gap: .6rem; color: var(--ink); }
+.sc-chap span { background: var(--wood); color: #fff; font-size: .8rem; border-radius: 99px; padding: .1em .8em; white-space: nowrap; }
+.cue-ch { display: block; font-style: normal; font-weight: 700; font-size: .78rem; color: var(--wood); }
+#storyPlayOpts { margin: .4rem 0; }
+#storyPlayOpts label { display: block; margin: .3rem 0; }
+.yt-box { margin-top: 1.2rem; }
+.yt-box textarea[readonly] { background: #faf8f2; font-size: .88rem; }
+@media (max-width: 860px) {
+  .grid4 .span2 { grid-column: 1 / -1; }
+  .ol-label { width: 7em; }
+}
 @media (prefers-reduced-motion: reduce) {
   .toast, .progress .bar { transition: none; }
 }
