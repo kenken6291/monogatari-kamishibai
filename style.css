@@ -170,6 +170,11 @@ main { max-width: 1180px; margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }
 .ai-base { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; margin: 0 0 .3rem 1.6rem; }
 .plan-est { background: var(--ai-soft); border-radius: 6px; padding: .5em .9em; margin: .6rem 0; font-weight: 500; }
 
+/* 画面の動き */
+.effects-box { margin-bottom: 1.2rem; }
+.eff-allowed { display: flex; flex-wrap: wrap; gap: .3rem 1.2rem; margin: .4rem 0 .6rem; }
+.eff-allowed label { margin: 0; font-weight: 400; display: flex; align-items: center; }
+
 /* 字幕の同期 */
 .capsync { margin-bottom: 1.2rem; }
 

@@ -341,6 +341,7 @@ function loadEditor(p, step) {
   renderStyleRefs();
   $('#voiceSelect').value = p.voice || 'Kore';
   $('#subToggle').checked = p.subtitles !== false;
+  renderAllowedEffects();
   $$('input[name=audioMode]').forEach(r => { r.checked = r.value === audioMode(); });
   $('#saveState').textContent = '';
   renderChars();
@@ -632,6 +633,24 @@ function initEditor() {
     renderScenes();
   }));
   initTapAlign();
+  $('#effAiBtn').addEventListener('click', withBusy($('#effAiBtn'), async () => {
+    if (!(state.project.scenes || []).length) throw new Error('先に本文を場面に分けてください');
+    $('#effAiBtn').textContent = 'AIが演出を考えています…';
+    await flushSave();
+    const j = await api('suggestEffects', { projectId: state.project.id, allowed: allowedEffects() });
+    j.project.scenes.forEach((s, i) => { if (state.project.scenes[i]) state.project.scenes[i].effect = s.effect; });
+    state.project.allowedEffects = j.project.allowedEffects;
+    renderScenes();
+    pl.loadingFor = null; // 上演の準備をやり直す
+    toast('全場面の動きをAIが付け直しました');
+  }));
+  $('#effReplaceBtn').addEventListener('click', () => {
+    const n = replaceDisallowedEffects();
+    if (!n) { toast('使わない動きの場面はありません'); return; }
+    scheduleSave({ scenes: state.project.scenes });
+    renderScenes();
+    toast(`${n}場面の動きを置き換えました`);
+  });
   $('#capSyncBtn').addEventListener('click', runCaptionSync);
 
   // 場面モーダル
@@ -1102,6 +1121,41 @@ function initTapAlign() {
     renderScenes();
     toast('区切りを保存しました');
   });
+}
+
+/* ---------- 画面の動きの設定 ---------- */
+function allowedEffects() {
+  const a = state.project?.allowedEffects;
+  const list = (Array.isArray(a) ? a : Object.keys(EFFECTS)).filter(k => EFFECTS[k]);
+  return list.length ? list : Object.keys(EFFECTS);
+}
+
+function renderAllowedEffects() {
+  const box = $('#effAllowed');
+  const on = allowedEffects();
+  box.innerHTML = Object.entries(EFFECTS).map(([k, v]) => `<label><input type="checkbox" value="${k}" ${on.includes(k) ? 'checked' : ''}> ${v}</label>`).join('');
+  $$('input', box).forEach(c => c.addEventListener('change', () => {
+    const list = $$('input', box).filter(x => x.checked).map(x => x.value);
+    if (!list.length) { c.checked = true; toast('動きは1つ以上選んでください', true); return; }
+    state.project.allowedEffects = list;
+    scheduleSave({ allowedEffects: list });
+  }));
+}
+
+// 使わない動きの場面だけ、前後と重ならない動きに置き換える
+function replaceDisallowedEffects() {
+  const allowed = allowedEffects();
+  const sc = state.project.scenes || [];
+  let n = 0;
+  sc.forEach((s, i) => {
+    if (allowed.includes(s.effect)) return;
+    const prev = i > 0 ? sc[i - 1].effect : null, next = i + 1 < sc.length ? sc[i + 1].effect : null;
+    const cand = allowed.filter(x => x !== prev && x !== next);
+    const pool = cand.length ? cand : allowed;
+    s.effect = pool[i % pool.length];
+    n++;
+  });
+  return n;
 }
 
 /* ---------- 生成 ---------- */

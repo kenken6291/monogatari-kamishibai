@@ -3,7 +3,7 @@
  * 小説 → 場面分割 → 漫画風静止画 → 朗読音声（Gemini TTS）
  * 保存先：Google Drive（作品ごとにフォルダ / project.json）＋会員はスプレッドシート
  */
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.9.0';
 const SP = PropertiesService.getScriptProperties();
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const USER_COLS = ['email', 'name', 'salt', 'hash', 'mustChange', 'createdAt', 'agreedAt', 'lastLogin', 'failCount', 'lockedUntil'];
@@ -69,7 +69,7 @@ const HANDLERS = {
   listProjects, getProject, saveProject, deleteProject,
   analyze, uploadFile, generateImage, generateCharacterSheet, generateTTS, getAsset,
   uploadSceneAudio, narrationPart, narrationCommit, deleteNarration, alignNarration,
-  removeStyleRef, analyzeStyle, alignWindow, suggestSceneCount
+  removeStyleRef, analyzeStyle, alignWindow, suggestSceneCount, suggestEffects
 };
 
 /* ========== 会員 ========== */
@@ -268,7 +268,7 @@ function saveProject(req, u) {
   if (inP.text && inP.text.length > 60000) throw new Error('本文が長すぎます（6万字まで）');
   if (inP.aspect && ASPECTS.indexOf(inP.aspect) < 0) throw new Error('画像サイズの指定が不正です');
   if (inP.audioMode && ['scenes', 'narration'].indexOf(inP.audioMode) < 0) throw new Error('音声の種類が不正です');
-  const keys = ['title', 'text', 'aspect', 'style', 'voice', 'characters', 'scenes', 'subtitles', 'audioMode', 'narrationStarts', 'styleRefAttach', 'captions', 'sceneMode', 'sceneCount', 'sceneSec', 'sceneMult'];
+  const keys = ['title', 'text', 'aspect', 'style', 'voice', 'characters', 'scenes', 'subtitles', 'audioMode', 'narrationStarts', 'styleRefAttach', 'captions', 'sceneMode', 'sceneCount', 'sceneSec', 'sceneMult', 'allowedEffects'];
   if (!inP.id) {
     const id = Utilities.getUuid().slice(0, 8) + Date.now().toString(36);
     const folder = userFolder(u).createFolder('p_' + id);
@@ -299,6 +299,8 @@ function saveProject(req, u) {
         if (!p.narration || !Array.isArray(st) || st.length !== (p.scenes || []).length) return;
         p.narration.starts = st.map(Number);
         p.narration.aligned = ['ai', 'manual'].indexOf(inP.narrationAligned) >= 0 ? inP.narrationAligned : 'manual';
+      } else if (k === 'allowedEffects') {
+        p.allowedEffects = cleanAllowed(inP.allowedEffects);
       } else if (k === 'captions') {
         if (inP.captions && JSON.stringify(inP.captions).length > 800000) throw new Error('字幕データが大きすぎます');
         p.captions = inP.captions || null;
@@ -432,7 +434,7 @@ function analyze(req, u) {
     '・各場面は連続した番号の範囲 paraStart〜paraEnd（両端を含む）。最初の場面は0から、最後の場面は' + (paras.length - 1) + 'まで。抜けや重なりがないこと。',
     '・imagePrompt：その場面の1枚絵の具体的な描写（構図、人物の表情・動作、背景、時間帯、天候、カメラアングル）を' + (target > 60 ? '80' : '150') + '字以内で。文字や吹き出しは含めない。',
     '・summary：場面のあらすじを' + (target > 60 ? '25' : '40') + '字以内で。',
-    '・effect：場面の雰囲気に合う画面の動き。' + EFFECTS.join(' / ') + ' から1つ。',
+    '・effect：場面の雰囲気に合う画面の動き。' + cleanAllowed(p.allowedEffects).join(' / ') + ' から1つ（同じ動きを3回以上続けない）。',
     '・characters：その場面に描く人物名。cast の name と完全一致させる。',
     '・cast：主要登場人物。features には年齢感・髪型・髪色・服装・体格・性格を本文から推定して書く。',
     known ? '・すでに登録済みの人物（名前はこれに合わせる）：\n' + known : '',
@@ -477,7 +479,7 @@ function analyze(req, u) {
       text: joinUnits(paras, st, en),
       summary: s.summary, location: s.location, characters: s.characters || [],
       imagePrompt: s.imagePrompt,
-      effect: EFFECTS.indexOf(s.effect) >= 0 ? s.effect : 'zoomIn',
+      effect: s.effect,
       imageFileId: null, bgRefFileId: null, audioFileId: null, duration: 0
     });
     next = en + 1;
@@ -488,6 +490,7 @@ function analyze(req, u) {
     last.text = joinUnits(paras, last.paraStart, last.paraEnd);
   }
   if (want) adjustSceneCount(scenes, paras, want);
+  fixEffects(scenes, cleanAllowed(p.allowedEffects));
 
   return {
     project: withProject(u, p.id, pp => {
@@ -991,6 +994,71 @@ function suggestSceneCount(req, u) {
       pp.aiSceneBase = count;
       pp.aiSceneReason = String(out.reason || '').slice(0, 120);
       pp.aiSceneTextLen = text.length;
+    })
+  };
+}
+
+/* ========== 画面の動き（パン・ズーム・スライド） ========== */
+const EFFECT_LABELS = {
+  zoomIn: 'ゆっくり寄る（緊張・注目・感情の高まり）',
+  zoomOut: 'ゆっくり引く（余韻・孤独・全体を見せる）',
+  panLeft: '左へパン（視線の移動・回想・戻る動き）',
+  panRight: '右へパン（進行・移動・時間の流れ）',
+  panUp: '上へパン（見上げる・希望・建物や空）',
+  panDown: '下へパン（見下ろす・落胆・足もと）',
+  slideIn: 'スライドで登場（場面転換・新しい場所や人物の登場）',
+  none: '動かさない（静止・間）'
+};
+
+function cleanAllowed(list) {
+  const a = (Array.isArray(list) ? list : EFFECTS).filter(e => EFFECTS.indexOf(e) >= 0);
+  return a.length ? a : EFFECTS.slice();
+}
+
+// 使えない動きを置き換え、同じ動きが3回以上続かないようにする
+function fixEffects(scenes, allowed) {
+  scenes.forEach((s, i) => {
+    let e = allowed.indexOf(s.effect) >= 0 ? s.effect : null;
+    const p1 = i > 0 ? scenes[i - 1].effect : null, p2 = i > 1 ? scenes[i - 2].effect : null;
+    if (!e || (allowed.length > 1 && e === p1 && e === p2)) {
+      const cand = allowed.filter(x => x !== p1);
+      e = (cand.length ? cand : allowed)[i % (cand.length || allowed.length)];
+    }
+    s.effect = e;
+  });
+}
+
+function suggestEffects(req, u) {
+  const folder = projectFolder(u, req.projectId);
+  const p = readProject(folder);
+  const scenes = p.scenes || [];
+  if (!scenes.length) throw new Error('先に場面を分けてください');
+  const allowed = cleanAllowed(req.allowed);
+  const prompt = [
+    'あなたは紙芝居と映像の演出家です。朗読に合わせて1枚絵をゆっくり動かして見せます。',
+    '下の各場面に、物語の流れと絵の内容に合う「画面の動き」を1つずつ付けてください。',
+    '使える動き（これ以外は使わない）：',
+    allowed.map(e => '・' + e + '：' + EFFECT_LABELS[e]).join('\n'),
+    '方針：場面の感情や構図に合わせる。単調にならないよう変化をつけ、同じ動きを3回以上続けない。場所や時間が変わる場面は slideIn が使えるなら優先する。',
+    '',
+    scenes.map((s, i) => '[' + i + '] 場所：' + (s.location || '') + '／' + (s.summary || '') + '／絵：' + String(s.imagePrompt || '').slice(0, 70)).join('\n')
+  ].join('\n');
+  const res = callGemini(model('text'), {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      responseMimeType: 'application/json', temperature: 0.5,
+      responseSchema: { type: 'OBJECT', properties: { effects: { type: 'ARRAY', items: { type: 'OBJECT', properties: { i: { type: 'INTEGER' }, effect: { type: 'STRING' } }, required: ['i', 'effect'] } } }, required: ['effects'] }
+    }
+  });
+  let out = [];
+  try { out = JSON.parse(textOf(res)).effects || []; } catch (e) { throw new Error('AIの結果を読み取れませんでした。もう一度お試しください'); }
+  return {
+    project: withProject(u, p.id, pp => {
+      pp.allowedEffects = allowed;
+      const map = {};
+      out.forEach(o => { map[o.i] = o.effect; });
+      pp.scenes.forEach((s, i) => { s.effect = map[i] || s.effect; });
+      fixEffects(pp.scenes, allowed);
     })
   };
 }
