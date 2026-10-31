@@ -277,6 +277,19 @@ function initSettings() {
     } catch (e) { $('#gasTestResult').textContent = '接続できません。URLとデプロイ設定（アクセス：全員）を確認してください'; }
   });
   $('#helpBtn').addEventListener('click', () => $('#helpModal').showModal());
+  // スマホ用メニュー
+  const nav = $('#topnav'), mb = $('#menuBtn');
+  const closeMenu = () => { nav.classList.remove('open'); mb.setAttribute('aria-expanded', 'false'); };
+  mb.addEventListener('click', e => {
+    e.stopPropagation();
+    const open = !nav.classList.contains('open');
+    nav.classList.toggle('open', open);
+    mb.setAttribute('aria-expanded', String(open));
+  });
+  $$('.link-btn', nav).forEach(b => b.addEventListener('click', closeMenu));
+  document.addEventListener('click', e => { if (!nav.contains(e.target)) closeMenu(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
+  $('#navHome').addEventListener('click', async () => { if (state.project) await flushSave(); showList(); });
 }
 
 /* ---------- 作品一覧 ---------- */
@@ -358,6 +371,7 @@ function goStep(n) {
     b.setAttribute('aria-selected', on);
   });
   [1, 2, 3, 4].forEach(i => { $('#pane' + i).hidden = i !== n; });
+  if (window.matchMedia('(max-width: 860px)').matches) window.scrollTo({ top: 0 });
   if (n === 3) renderScenes();
   if (n === 4) preparePlayer();
 }

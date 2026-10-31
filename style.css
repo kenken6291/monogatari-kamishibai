@@ -258,11 +258,59 @@ label.inline select { width: auto; margin: 0; }
 .scene-text { white-space: pre-wrap; font-size: .9rem; color: var(--muted); max-height: 30vh; overflow: auto; }
 
 .foot { position: fixed; right: .8rem; bottom: .5rem; font-size: .75rem; color: var(--muted); background: rgba(242,243,238,.9); padding: 0 .4em; border-radius: 4px; }
-.toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%) translateY(150%); background: var(--ink); color: #fff; padding: .7em 1.2em; border-radius: 6px; max-width: 90vw; transition: transform .25s; z-index: 50; }
-.toast.show { transform: translateX(-50%) translateY(0); }
+.toast { position: fixed; left: 50%; bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%) translateY(20px); background: var(--ink); color: #fff; padding: .7em 1.2em; border-radius: 6px; max-width: 90vw; opacity: 0; visibility: hidden; transition: transform .25s, opacity .25s, visibility .25s; z-index: 300; }
+.toast.show { transform: translateX(-50%) translateY(0); opacity: 1; visibility: visible; }
+.step-tab .sm { display: none; }
+.menu-btn { display: none; }
 .toast.err { background: var(--danger); }
 
 @media (max-width: 860px) {
+  /* ヘッダー：メニューボタンで開閉 */
+  .topbar { position: sticky; top: 0; z-index: 120; flex-wrap: nowrap; gap: .6rem; padding: .6rem 1rem; }
+  .brand { font-size: 1.1rem; white-space: nowrap; }
+  .who { margin-left: auto; font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30vw; }
+  .menu-btn { display: inline-flex; flex-direction: column; justify-content: center; gap: 5px; width: 44px; height: 40px; padding: 0 10px; background: none; border: 1.5px solid rgba(255,255,255,.6); border-radius: 6px; cursor: pointer; }
+  .menu-btn span { display: block; height: 2px; background: #fff; border-radius: 2px; }
+  .topnav { display: none; position: absolute; right: .6rem; top: calc(100% + .3rem); flex-direction: column; background: var(--sheet); color: var(--ink); border: 2px solid var(--ink); border-radius: 6px; box-shadow: 6px 6px 0 var(--wood); min-width: 12rem; padding: .3rem 0; }
+  .topnav.open { display: flex; }
+  .topnav .link-btn { text-align: left; text-decoration: none; padding: .8em 1.2em; font-size: 1rem; }
+  .topnav .link-btn + .link-btn { border-top: 1px solid var(--line); }
+
+  /* 編集画面：手順タブを画面下に固定 */
+  main { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px)); }
+  .steps { position: fixed; left: 0; right: 0; bottom: 0; z-index: 110; margin: 0; border: 0; border-top: 2px solid var(--ink); background: var(--sheet); flex-wrap: nowrap; padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .steps li { flex: 1; }
+  .step-tab { width: 100%; display: flex; flex-direction: column; align-items: center; gap: .1rem; padding: .45rem .2rem .5rem; margin: 0; border-bottom: 0; border-top: 4px solid transparent; font-size: .8rem; }
+  .step-tab::before { margin: 0; }
+  .step-tab.active { border-top-color: var(--yamabuki); background: #fbf3dc; }
+  .step-tab .lg { display: none; }
+  .step-tab .sm { display: inline; }
+  .foot { bottom: calc(4.6rem + env(safe-area-inset-bottom, 0px)); }
+  .toast { bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px)); }
+
+  /* 作品一覧 */
+  .list-head { flex-wrap: wrap; gap: .6rem; }
+  .project-list li { gap: .5rem; }
+
+  /* 対応表：1場面ずつのカード表示 */
+  .scenes thead { display: none; }
+  .scenes, .scenes tbody { display: block; }
+  .scenes tr { display: grid; grid-template-columns: auto 1fr; gap: .3rem .7rem; padding: .7rem .2rem; border-bottom: 1px solid var(--line); }
+  .scenes td { display: block; border: 0; padding: 0; }
+  .scenes td.no { grid-row: 1; grid-column: 1; }
+  .scenes td.tm { grid-row: 1; grid-column: 2; align-self: center; }
+  .scenes td:nth-child(3) { grid-column: 1 / -1; }
+  .scenes td:nth-child(4) { grid-column: 1 / -1; }
+  .scenes td:nth-child(5) { grid-column: 1 / -1; }
+  .scenes td:nth-child(6) { grid-column: 1 / -1; }
+  .thumb { width: 100%; }
+  .thumb.p916 { width: 50%; } .thumb.p11 { width: 70%; }
+  .ops { flex-direction: row; flex-wrap: wrap; }
+  .scenes .ex { max-width: none; }
+
+  .tools, .gen-bar { gap: .4rem; }
+  .gen-bar .btn, .tools .btn { flex: 1 1 auto; }
+  .title-input { font-size: 1.15rem; }
   .theater { grid-template-columns: 1fr; }
   .grid2 { grid-template-columns: 1fr; }
   .char { grid-template-columns: 1fr; }

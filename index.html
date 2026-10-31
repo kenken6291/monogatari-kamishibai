@@ -70,7 +70,9 @@
   <header class="topbar">
     <a href="#" class="brand" id="homeLink">ものがたり紙芝居</a>
     <span class="who" id="whoName"></span>
-    <nav class="topnav">
+    <button class="menu-btn" id="menuBtn" aria-expanded="false" aria-controls="topnav" aria-label="メニュー"><span></span><span></span><span></span></button>
+    <nav class="topnav" id="topnav">
+      <button class="link-btn" id="navHome">作品一覧</button>
       <button class="link-btn" id="helpBtn">使い方</button>
       <button class="link-btn" id="settingsBtn">設定</button>
       <button class="link-btn" id="logoutBtn">ログアウト</button>
@@ -96,10 +98,10 @@
       </div>
 
       <ol class="steps" role="tablist">
-        <li><button class="step-tab" data-step="1" role="tab">本文</button></li>
-        <li><button class="step-tab" data-step="2" role="tab">絵と声の設定</button></li>
-        <li><button class="step-tab" data-step="3" role="tab">場面と生成</button></li>
-        <li><button class="step-tab" data-step="4" role="tab">上演・書き出し</button></li>
+        <li><button class="step-tab" data-step="1" role="tab"><span class="lg">本文</span><span class="sm">本文</span></button></li>
+        <li><button class="step-tab" data-step="2" role="tab"><span class="lg">絵と声の設定</span><span class="sm">絵と声</span></button></li>
+        <li><button class="step-tab" data-step="3" role="tab"><span class="lg">場面と生成</span><span class="sm">場面</span></button></li>
+        <li><button class="step-tab" data-step="4" role="tab"><span class="lg">上演・書き出し</span><span class="sm">上演</span></button></li>
       </ol>
 
       <!-- 1 本文 -->
