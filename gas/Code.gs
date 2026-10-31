@@ -3,7 +3,7 @@
  * 小説 → 場面分割 → 漫画風静止画 → 朗読音声（Gemini TTS）
  * 保存先：Google Drive（作品ごとにフォルダ / project.json）＋会員はスプレッドシート
  */
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '2.0.0';
 const SP = PropertiesService.getScriptProperties();
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const USER_COLS = ['email', 'name', 'salt', 'hash', 'mustChange', 'createdAt', 'agreedAt', 'lastLogin', 'failCount', 'lockedUntil'];
@@ -16,7 +16,8 @@ function model(kind) {
   return {
     text: prop('TEXT_MODEL', 'gemini-2.5-flash'),
     image: prop('IMAGE_MODEL', 'gemini-2.5-flash-image'),
-    tts: prop('TTS_MODEL', 'gemini-2.5-flash-preview-tts')
+    tts: prop('TTS_MODEL', 'gemini-2.5-flash-preview-tts'),
+    light: prop('LIGHT_MODEL', 'gemini-2.5-flash-lite')
   }[kind];
 }
 
@@ -53,6 +54,7 @@ function doPost(e) {
     if (!h) throw new Error('不明な操作です: ' + req.action);
     const open = ['ping', 'register', 'login', 'resetPassword'];
     const user = open.indexOf(req.action) >= 0 ? null : auth(req.token, req.action);
+    CTX = { email: user ? user.email : '', action: req.action };
     return json(Object.assign({ ok: true }, h(req, user) || {}));
   } catch (err) {
     return json({ ok: false, error: String(err && err.message || err) });
@@ -69,7 +71,7 @@ const HANDLERS = {
   listProjects, getProject, saveProject, deleteProject,
   analyze, uploadFile, generateImage, generateCharacterSheet, generateTTS, getAsset,
   uploadSceneAudio, narrationPart, narrationCommit, deleteNarration, alignNarration,
-  removeStyleRef, analyzeStyle, alignWindow, suggestSceneCount, suggestEffects
+  removeStyleRef, analyzeStyle, alignWindow, suggestSceneCount, suggestEffects, getUsage
 };
 
 /* ========== 会員 ========== */
@@ -316,9 +318,23 @@ function deleteProject(req, u) {
 }
 
 /* ========== Gemini 共通 ========== */
-function callGemini(modelName, body) {
+let CTX = { email: '', action: '' };
+
+// 2.5系のテキストモデルは「考える」トークンも課金されるため、既定で考える量を0にする
+function withThinking(modelName, body, budget) {
+  if (prop('THINKING', 'auto') === 'model-default') return body;
+  if (!/gemini-2\.5-(flash|pro)/.test(modelName) || /tts|image/.test(modelName)) return body;
+  const b = budget == null ? 0 : budget;
+  body.generationConfig = Object.assign({}, body.generationConfig, {
+    thinkingConfig: { thinkingBudget: /pro/.test(modelName) ? Math.max(128, b) : b }
+  });
+  return body;
+}
+
+function callGemini(modelName, body, thinkingBudget) {
   const key = prop('GEMINI_API_KEY', '');
   if (!key) throw new Error('サーバーにGEMINI_API_KEYが設定されていません');
+  withThinking(modelName, body, thinkingBudget);
   const opt = {
     method: 'post', contentType: 'application/json', muteHttpExceptions: true,
     headers: { 'x-goog-api-key': key }, payload: JSON.stringify(body)
@@ -328,7 +344,7 @@ function callGemini(modelName, body) {
     res = UrlFetchApp.fetch(GEMINI_BASE + modelName + ':generateContent', opt);
     code = res.getResponseCode();
     txt = res.getContentText();
-    if (code === 200) return JSON.parse(txt);
+    if (code === 200) { const r = JSON.parse(txt); logUsage(modelName, r.usageMetadata); return r; }
     if ([429, 500, 503].indexOf(code) < 0) break;
     Utilities.sleep(3000 * (i + 1));
   }
@@ -461,7 +477,7 @@ function analyze(req, u) {
   const res = callGemini(model('text'), {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: { responseMimeType: 'application/json', responseSchema: schema, temperature: 0.4, maxOutputTokens: 60000 }
-  });
+  }, Number(prop('ANALYZE_THINKING', '1024')));
   let out;
   try { out = JSON.parse(textOf(res)); } catch (e) { throw new Error('解析結果を読み取れませんでした。場面数を減らすか、もう一度お試しください'); }
 
@@ -576,7 +592,7 @@ function generateImage(req, u) {
   const parts = [];
   const notes = styleRefParts(p, parts);
   const chars = (p.characters || []).filter(c => (s.characters || []).indexOf(c.name) >= 0);
-  chars.slice(0, 3).forEach(c => {
+  chars.slice(0, Number(prop('MAX_CHAR_REFS', '2'))).forEach(c => {
     if (!c.refFileId) return;
     try { parts.push(blobPart(c.refFileId)); notes.push(parts.length + '枚目の画像は「' + c.name + '」の設定画。顔・髪型・服装を一致させる。'); } catch (e) { }
   });
@@ -896,7 +912,7 @@ function alignNarration(req, u) {
 // 参考絵を最大2枚、生成リクエストの先頭に添付する
 function styleRefParts(p, parts) {
   const notes = [];
-  if (p.styleRefAttach === false) return notes;
+  if (p.styleRefAttach !== true) return notes; // 既定はオフ（作風の文章だけで描く）
   (p.styleRefs || []).slice(0, 2).forEach(id => {
     try {
       parts.push(blobPart(id));
@@ -930,7 +946,7 @@ function analyzeStyle(req, u) {
       '作品名・作家名・キャラクター名・描かれている具体的な内容は書かない。前置きや見出しは不要で、指示文だけを出力する。'
     ].join('\n')
   });
-  const text = textOf(callGemini(model('text'), { contents: [{ parts: parts }], generationConfig: { temperature: 0.3 } })).trim();
+  const text = textOf(callGemini(model('light'), { contents: [{ parts: parts }], generationConfig: { temperature: 0.3 } })).trim();
   if (!text) throw new Error('作風を読み取れませんでした');
   return { project: withProject(u, p.id, pp => { pp.style = text; }) };
 }
@@ -979,7 +995,7 @@ function suggestSceneCount(req, u) {
     'count には枚数（4〜100の整数）、reason にはそう判断した理由を60字以内で書いてください。',
     '', '【小説】', text
   ].join('\n');
-  const res = callGemini(model('text'), {
+  const res = callGemini(model('light'), {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {
       responseMimeType: 'application/json', temperature: 0.2,
@@ -1043,7 +1059,7 @@ function suggestEffects(req, u) {
     '',
     scenes.map((s, i) => '[' + i + '] 場所：' + (s.location || '') + '／' + (s.summary || '') + '／絵：' + String(s.imagePrompt || '').slice(0, 70)).join('\n')
   ].join('\n');
-  const res = callGemini(model('text'), {
+  const res = callGemini(model('light'), {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {
       responseMimeType: 'application/json', temperature: 0.5,
@@ -1061,4 +1077,35 @@ function suggestEffects(req, u) {
       fixEffects(pp.scenes, allowed);
     })
   };
+}
+
+/* ========== AIの使用量の記録 ========== */
+function usageSheet() {
+  const ss = SpreadsheetApp.openById(prop('SPREADSHEET_ID'));
+  let sh = ss.getSheetByName('Usage');
+  if (!sh) { sh = ss.insertSheet('Usage'); sh.appendRow(['date', 'email', 'action', 'model', 'input', 'output', 'thinking', 'total']); sh.setFrozenRows(1); }
+  return sh;
+}
+
+function logUsage(modelName, u) {
+  if (!u) return;
+  try {
+    usageSheet().appendRow([new Date(), CTX.email, CTX.action, modelName,
+      u.promptTokenCount || 0, u.candidatesTokenCount || 0, u.thoughtsTokenCount || 0, u.totalTokenCount || 0]);
+  } catch (e) { /* 記録の失敗で本処理は止めない */ }
+}
+
+// 直近30日の自分の使用量を操作ごとに集計
+function getUsage(req, u) {
+  const v = usageSheet().getDataRange().getValues();
+  const since = Date.now() - 30 * 86400000;
+  const by = {};
+  for (let i = 1; i < v.length; i++) {
+    const r = v[i];
+    if (String(r[1]).toLowerCase() !== u.email || new Date(r[0]).getTime() < since) continue;
+    const k = r[2] + '|' + r[3];
+    const o = by[k] || (by[k] = { action: r[2], model: r[3], calls: 0, input: 0, output: 0, thinking: 0 });
+    o.calls++; o.input += Number(r[4]) || 0; o.output += Number(r[5]) || 0; o.thinking += Number(r[6]) || 0;
+  }
+  return { usage: Object.keys(by).map(k => by[k]).sort((a, b) => (b.input + b.output + b.thinking) - (a.input + a.output + a.thinking)) };
 }

@@ -277,6 +277,17 @@ function initSettings() {
     } catch (e) { $('#gasTestResult').textContent = '接続できません。URLとデプロイ設定（アクセス：全員）を確認してください'; }
   });
   $('#helpBtn').addEventListener('click', () => $('#helpModal').showModal());
+  $('#usageBtn').addEventListener('click', withBusy($('#usageBtn'), async () => {
+    const j = await api('getUsage');
+    const label = { analyze: '場面に分ける', suggestSceneCount: 'おすすめ枚数', suggestEffects: '画面の動き', analyzeStyle: '作風づくり',
+      generateImage: '場面の絵', generateCharacterSheet: '三面図', generateTTS: 'AI朗読', alignWindow: '字幕同期', alignNarration: '場面合わせ（旧）' };
+    const n = x => Math.round(x).toLocaleString();
+    const rows = j.usage.map(u => `<tr><td>${esc(label[u.action] || u.action)}<br><small>${esc(u.model)}</small></td><td>${u.calls}</td><td>${n(u.input)}</td><td>${n(u.output)}</td><td>${n(u.thinking)}</td></tr>`).join('');
+    const sum = k => j.usage.reduce((a, u) => a + u[k], 0);
+    $('#usageTable').innerHTML = j.usage.length
+      ? `<thead><tr><th>操作</th><th>回数</th><th>入力</th><th>出力</th><th>考える</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td>合計</td><td>${sum('calls')}</td><td>${n(sum('input'))}</td><td>${n(sum('output'))}</td><td>${n(sum('thinking'))}</td></tr></tfoot>`
+      : '<tbody><tr><td>まだ記録がありません（v2.0.0以降の使用分から記録します）</td></tr></tbody>';
+  }));
   // スマホ用メニュー
   const nav = $('#topnav'), mb = $('#menuBtn');
   const closeMenu = () => { nav.classList.remove('open'); mb.setAttribute('aria-expanded', 'false'); };
@@ -350,7 +361,7 @@ function loadEditor(p, step) {
   renderScenePlan();
   $$('input[name=aspect]').forEach(r => { r.checked = r.value === (p.aspect || '16:9'); });
   $('#styleInput').value = p.style || '';
-  $('#styleRefAttach').checked = p.styleRefAttach !== false;
+  $('#styleRefAttach').checked = p.styleRefAttach === true;
   renderStyleRefs();
   $('#voiceSelect').value = p.voice || 'Kore';
   $('#subToggle').checked = p.subtitles !== false;
@@ -572,7 +583,7 @@ function initEditor() {
     if (!f) return;
     $('#styleRefAdd').textContent = 'アップロード中…';
     await flushSave();
-    const j = await api('uploadFile', { projectId: state.project.id, kind: 'styleRef', dataUrl: await shrinkImage(f) });
+    const j = await api('uploadFile', { projectId: state.project.id, kind: 'styleRef', dataUrl: await shrinkImage(f, 768) });
     state.project.styleRefs = j.project.styleRefs;
     renderStyleRefs();
   }));
@@ -620,14 +631,8 @@ function initEditor() {
     e.target.value = '';
     if (f) await importNarration(f);
   });
-  $('#alignAiBtn').addEventListener('click', withBusy($('#alignAiBtn'), async () => {
-    $('#alignAiBtn').textContent = 'AIが朗読を聞いています…（数分）';
-    await flushSave();
-    const j = await api('alignNarration', { projectId: state.project.id });
-    state.project.narration = j.project.narration;
-    renderScenes();
-    toast(`${j.found}/${j.total}場面の位置をAIが見つけました。残りは文字数で割り振りました。上演で確かめて、ずれていれば「聞きながら区切る」で直せます`);
-  }));
+  // 場面の区切り合わせは字幕同期と同時に行う（同じ朗読をAIに2回聞かせない）
+  $('#alignAiBtn').addEventListener('click', () => runCaptionSync());
   $('#alignRatioBtn').addEventListener('click', async () => {
     const n = state.project.narration;
     if (!n) return;
@@ -751,7 +756,7 @@ function renderChars() {
       if (!f) return;
       $('.c-up', el).textContent = 'アップロード中…';
       await flushSave();
-      const j = await api('uploadFile', { projectId: state.project.id, kind: 'charRef', charId: c.id, dataUrl: await shrinkImage(f) });
+      const j = await api('uploadFile', { projectId: state.project.id, kind: 'charRef', charId: c.id, dataUrl: await shrinkImage(f, 1024) });
       state.project.characters = j.project.characters;
       renderChars();
     }));
@@ -873,7 +878,7 @@ function renderScenes() {
       try {
         state.busyScenes.add(i); renderScenes();
         await flushSave();
-        const j = await api('uploadFile', { projectId: state.project.id, kind: 'bgRef', sceneIdx: i, dataUrl: await shrinkImage(f) });
+        const j = await api('uploadFile', { projectId: state.project.id, kind: 'bgRef', sceneIdx: i, dataUrl: await shrinkImage(f, 768) });
         state.project.scenes[i].bgRefFileId = j.project.scenes[i].bgRefFileId;
         toast('背景参考を入れました。「絵を作り直す」で反映されます');
       } catch (e) { toast(e.message, true); }
@@ -1197,10 +1202,14 @@ async function runBatch(kind) {
   if (!scenes.length) { toast('先に本文をAIで場面に分けてください', true); return; }
   const key = kind === 'image' ? 'imageFileId' : 'audioFileId';
   let targets = scenes.map((s, i) => i).filter(i => !scenes[i][key]);
-  if (!targets.length) {
-    if (!confirm(`すべての場面で${kind === 'image' ? '絵' : '朗読'}が生成済みです。全部作り直しますか？`)) return;
-    targets = scenes.map((s, i) => i);
+  if (kind === 'audio' && audioMode() === 'narration') {
+    toast('取り込んだ朗読ファイルを使う設定なので、AIの朗読は作りません（使用量の節約）。必要なら「場面ごとの音声」に切り替えてください', true);
+    return;
   }
+  if (!targets.length) {
+    if (!confirm(`すべての場面で${kind === 'image' ? '絵' : '朗読'}が生成済みです。全部作り直しますか？（AIを${scenes.length}回使います）`)) return;
+    targets = scenes.map((s, i) => i);
+  } else if (!confirm(`${kind === 'image' ? '絵' : '朗読'}がない${targets.length}場面を生成します（AIを約${kind === 'image' ? targets.length : targets.reduce((a, i) => a + Math.ceil((scenes[i].text || '').length / 600), 0)}回使います）。よろしいですか？`)) return;
   state.running = true; state.stop = false;
   $('#genImagesBtn').disabled = $('#genAudioBtn').disabled = true;
   $('#stopBtn').hidden = false; $('#stopBtn').textContent = '止める';
@@ -1500,6 +1509,10 @@ async function runCaptionSync() {
   const maxLen = capMaxLen();
   const segs = scenes.map(s => capSegments(s.text, maxLen));
   if (mode === 'scenes' && !scenes.some(s => s.audioFileId)) { toast('朗読の音声がまだありません', true); return; }
+  const estSec = mode === 'narration' ? p.narration.duration : scenes.reduce((a, s) => a + (s.audioFileId ? (s.duration || 0) : 0), 0);
+  const estCalls = mode === 'narration' ? Math.ceil(estSec / (SYNC_WIN - SYNC_TAIL - 5)) : scenes.filter(s => s.audioFileId).reduce((a, s) => a + Math.max(1, Math.ceil((s.duration || 0) / (SYNC_WIN - SYNC_TAIL - 5))), 0);
+  const already = p.captions && p.captions.sig === capSig();
+  if (!confirm(`${already ? '字幕はすでに同期済みです。やり直しますか？\n' : ''}朗読（約${fmtTime(estSec)}）をAIに聞かせて、場面の区切りと字幕を合わせます。AIを約${estCalls}回使います。`)) return;
   state.running = true; state.stop = false;
   $('#genImagesBtn').disabled = $('#genAudioBtn').disabled = $('#capSyncBtn').disabled = true;
   $('#stopBtn').hidden = false; $('#stopBtn').textContent = '止める';

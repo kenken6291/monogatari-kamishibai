@@ -183,7 +183,7 @@
                 <button class="btn small ghost" id="styleRefAdd">参考絵を追加</button>
                 <button class="btn small primary" id="styleAnalyzeBtn">参考絵から作風を作る</button>
               </div>
-              <label class="check"><input type="checkbox" id="styleRefAttach" checked> 絵を描くたびに参考絵もAIに見せる</label>
+              <label class="check"><input type="checkbox" id="styleRefAttach"> 絵を描くたびに参考絵もAIに見せる（AIの使用量が増えます）</label>
             </div>
             <div>
               <label>作風の説明（AIへの画風指示）
@@ -212,7 +212,7 @@
           </div>
           <div class="tools">
             <label class="btn ghost file-btn" id="narrFileBtn">朗読ファイルを取り込む<input type="file" id="narrFile" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac" hidden></label>
-            <button class="btn ghost" id="alignAiBtn">AIで場面に合わせる</button>
+            <button class="btn ghost" id="alignAiBtn">AIで場面と字幕を合わせる</button>
             <button class="btn ghost" id="tapAlignBtn">聞きながら区切る</button>
             <button class="btn ghost" id="alignRatioBtn">文字数の比率で合わせる</button>
             <button class="btn small danger" id="narrDelBtn">朗読ファイルを外す</button>
@@ -329,6 +329,10 @@
     <button class="btn ghost" id="gasResetBtn" type="button">config.jsの値に戻す</button>
     <button class="btn primary" id="gasSaveBtn" type="button">保存</button>
   </div>
+  <h2 class="usage-h">AIの使用量（直近30日）</h2>
+  <p class="note">Gemini APIを使った回数とトークン数を、操作ごとに集計します。「考える」トークンは出力と同じ料金がかかります。</p>
+  <button class="btn ghost" id="usageBtn" type="button">使用量を見る</button>
+  <div class="table-wrap"><table class="usage" id="usageTable"></table></div>
 </dialog>
 
 <!-- 場面の編集 -->
