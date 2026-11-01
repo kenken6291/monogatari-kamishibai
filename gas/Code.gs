@@ -4,7 +4,7 @@
  * ものがたりモード：テーマ → AI脚本（セリフ・ナレーション）→ 人物ごとの声 → 吹き出しで上演
  * 保存先：Google Drive（作品ごとにフォルダ / project.json）＋会員はスプレッドシート
  */
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.2.0';
 const SP = PropertiesService.getScriptProperties();
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const USER_COLS = ['email', 'name', 'salt', 'hash', 'mustChange', 'createdAt', 'agreedAt', 'lastLogin', 'failCount', 'lockedUntil'];

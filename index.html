@@ -202,6 +202,12 @@
           <span class="note">セリフは場面ごとに「編集」で直せます。よければ、人物の見た目と声を決めましょう。</span>
           <button class="btn primary" id="toStep2Btn">絵と声の設定へ</button>
         </div>
+        <div class="tools dl-tools" id="scriptDl" hidden>
+          <span class="note">セリフ・ナレーションを書き出す：</span>
+          <button class="btn small ghost" data-dl="txt" type="button">台本（テキスト）</button>
+          <button class="btn small ghost" data-dl="csv" type="button">表（CSV・Excel用）</button>
+          <button class="btn small ghost" data-dl="srt" type="button">字幕（SRT）</button>
+        </div>
        </div>
        <div id="novelBox">
         <div class="tools">
@@ -398,6 +404,16 @@
               </select>
             </label>
             <button class="btn ghost wide" id="recordBtn">動画を書き出す（高速）</button>
+            <div class="dl-box">
+              <p class="note">セリフ・ナレーションを書き出す</p>
+              <div class="tools dl-tools">
+                <button class="btn small ghost" data-dl="txt" type="button">台本（テキスト）</button>
+                <button class="btn small ghost" data-dl="csv" type="button">表（CSV）</button>
+                <button class="btn small ghost" data-dl="srt" type="button">字幕（SRT）</button>
+                <button class="btn small ghost" data-dl="vtt" type="button">字幕（VTT）</button>
+              </div>
+              <p class="note">字幕ファイルの時刻は、上演の準備が終わっていれば実際の声に合わせた時刻、まだなら文字数からの目安です。YouTubeの字幕にもそのまま使えます。</p>
+            </div>
             <div class="progress exp" id="expWrap" hidden><div class="bar" id="expBar"></div><span id="expText"></span></div>
             <p class="note" id="prepStatus"></p>
             <ol id="cueList" class="cue-list"></ol>

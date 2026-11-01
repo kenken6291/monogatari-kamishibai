@@ -945,6 +945,8 @@ function initStoryForm() {
   };
   $('#ytCopyTitle').addEventListener('click', () => copy($('#ytTitle').value, 'タイトルをコピーしました'));
   $('#ytCopy').addEventListener('click', () => copy($('#ytFull').value, '説明文をコピーしました'));
+  // セリフ・ナレーションの書き出し
+  $$('[data-dl]').forEach(b => b.addEventListener('click', async () => { await flushSave(); exportScript(b.dataset.dl); }));
 }
 
 // 設計図（章立て）の一覧。見出し・あらすじは直せる
@@ -1001,6 +1003,7 @@ function renderScript() {
   const scenes = isStory() ? (state.project.scenes || []) : [];
   const o = state.project?.storyOutline;
   $('#scriptFoot').hidden = !scenes.length;
+  $('#scriptDl').hidden = !scenes.length;
   if (!scenes.length) { box.innerHTML = '<p class="empty">まだ脚本がありません。上の条件を決めて「AIで物語を作る」を押してください。</p>'; return; }
   box.innerHTML = scenes.map((s, i) => {
     const ci = s.ch || 0;
@@ -1025,6 +1028,147 @@ function renderScriptHeads() {
     const c = o.chapters[Number(h.dataset.ch)];
     if (c) h.innerHTML = `<span>${esc(c.label)}</span>${esc(c.title)}`;
   });
+}
+
+/* ---------- セリフ・ナレーションの書き出し（台本テキスト・CSV・字幕SRT/VTT） ---------- */
+// 場面ごとの開始時刻：上演の準備ができていれば実際の声の長さ、まだなら目安
+function cueSceneStarts() {
+  const scenes = state.project.scenes || [];
+  if (playerReadyForProject() && pl.mode !== 'narration') {
+    let t = 0;
+    return scenes.map((s, i) => { const r = t; t += pl.buffers[i] ? pl.buffers[i].duration : sceneDur(s); return r; });
+  }
+  return sceneTimes().map(x => x.from);
+}
+
+function playerReadyForProject() {
+  return !!(pl.ready && pl.caps && pl.loadingFor && String(pl.loadingFor).startsWith(state.project.id + ':')
+    && pl.caps.length === (state.project.scenes || []).length);
+}
+
+// 書き出す1行ずつ（時刻は作品の頭からの秒）
+function scriptCues() {
+  const p = state.project;
+  const scenes = p.scenes || [];
+  const starts = cueSceneStarts();
+  const times = sceneTimes();
+  const story = isStory();
+  const live = playerReadyForProject();
+  const off = capOffset();
+  const out = [];
+  scenes.forEach((s, i) => {
+    const base = starts[i];
+    const chap = story && p.storyOutline?.chapters?.[s.ch || 0];
+    const head = { scene: i + 1, summary: s.summary || '', chapter: chap ? [chap.label, chap.title].filter(Boolean).join('　') : '' };
+    let items;
+    if (live) {
+      items = pl.caps[i].map(c => ({ text: c.text, from: c.from, to: c.to, speaker: c.speaker || NARRATOR, tone: c.tone || 'normal' }));
+    } else if (story) {
+      const lines = s.lines || [];
+      const dur = sceneDur(s);
+      const timed = s.duration && lines.every(l => isFinite(l.from) && isFinite(l.to) && l.to > l.from);
+      const total = lines.reduce((a, l) => a + l.text.length + 4, 0) || 1;
+      let acc = 0;
+      items = lines.map(l => {
+        let from, to;
+        if (timed) { from = l.from; to = l.to; } else { from = dur * acc / total; acc += l.text.length + 4; to = dur * acc / total; }
+        return { text: l.text, from, to, speaker: l.speaker, tone: l.tone || 'normal' };
+      });
+    } else {
+      const segs = capSegments(s.text, capMaxLen());
+      const dur = times[i].dur;
+      const total = segs.reduce((a, g) => a + g.text.length, 0) || 1;
+      let acc = 0;
+      items = segs.map(g => { const from = dur * acc / total; acc += g.text.length; return { text: g.text, from, to: dur * acc / total, speaker: NARRATOR, tone: 'normal' }; });
+    }
+    items.forEach(c => out.push({ ...head, ...c, from: Math.max(0, base + c.from - off), to: Math.max(0, base + c.to - off) }));
+  });
+  // 重なり・短すぎる表示を整える
+  out.forEach((c, k) => {
+    const next = out[k + 1];
+    if (next && c.to > next.from) c.to = next.from;
+    if (c.to - c.from < 0.3) c.to = c.from + 0.3;
+  });
+  return { cues: out, live };
+}
+
+function tc(sec, sep) {
+  const ms = Math.round(sec * 1000);
+  const h = Math.floor(ms / 3600000), m = Math.floor(ms % 3600000 / 60000), s = Math.floor(ms % 60000 / 1000), r = ms % 1000;
+  const z = (n, w = 2) => String(n).padStart(w, '0');
+  return `${z(h)}:${z(m)}:${z(s)}${sep}${z(r, 3)}`;
+}
+
+function speakerTag(c) {
+  if (c.speaker === NARRATOR) return '';
+  return c.speaker + (c.tone && TONE_MARK[c.tone] ? `（${TONE_MARK[c.tone]}）` : '');
+}
+
+function scriptTxt() {
+  const p = state.project;
+  const scenes = p.scenes || [];
+  const story = isStory();
+  const out = [p.title || '無題', ''];
+  if (story && p.characters?.length) {
+    out.push('■登場人物');
+    p.characters.filter(c => c.name).forEach(c => out.push(`・${c.name}${c.features ? '：' + c.features.replace(/\n/g, ' ') : ''}`));
+    out.push('');
+  }
+  scenes.forEach((s, i) => {
+    const ci = s.ch || 0;
+    const chap = story && p.storyOutline?.chapters?.[ci];
+    if (chap && (i === 0 || (scenes[i - 1].ch || 0) !== ci)) out.push('', `【${[chap.label, chap.title].filter(Boolean).join('　')}】`, '');
+    out.push(`◆場面${i + 1}　${s.summary || ''}`);
+    if (story) (s.lines || []).forEach(l => out.push(l.speaker === NARRATOR ? `ナレーション：${l.text}` : `${speakerTag(l)}：${l.text}`));
+    else out.push(s.text || '');
+    out.push('');
+  });
+  return out.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+function scriptCsv() {
+  const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const { cues } = scriptCues();
+  const rows = [['章', '場面', '開始', '終了', '話す人', '口調', 'セリフ・ナレーション', '場面のあらすじ']];
+  const toneName = { normal: 'ふつう', shout: '叫ぶ', think: '心の声', whisper: 'ささやき' };
+  cues.forEach(c => rows.push([c.chapter, c.scene, tc(c.from, '.'), tc(c.to, '.'), c.speaker, toneName[c.tone] || '', c.text, c.summary]));
+  return '\uFEFF' + rows.map(r => r.map(q).join(',')).join('\r\n');
+}
+
+function scriptSubs(kind) {
+  const { cues } = scriptCues();
+  const sep = kind === 'vtt' ? '.' : ',';
+  const body = cues.map((c, k) => {
+    const who = speakerTag(c);
+    const text = who ? `${who}「${c.text}」` : c.text;
+    return `${kind === 'vtt' ? '' : (k + 1) + '\n'}${tc(c.from, sep)} --> ${tc(c.to, sep)}\n${text}`;
+  }).join('\n\n');
+  return (kind === 'vtt' ? 'WEBVTT\n\n' : '') + body + '\n';
+}
+
+function downloadFile(name, text, mime) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: mime }));
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+function exportScript(kind) {
+  const p = state.project;
+  if (!p?.scenes?.length) { toast('書き出す場面がありません', true); return; }
+  const base = (p.title || 'kamishibai').replace(/[\\/:*?"<>|]/g, '_');
+  if (kind === 'txt') downloadFile(`${base}_台本.txt`, scriptTxt(), 'text/plain;charset=utf-8');
+  else if (kind === 'csv') downloadFile(`${base}_台本.csv`, scriptCsv(), 'text/csv;charset=utf-8');
+  else {
+    downloadFile(`${base}.${kind}`, scriptSubs(kind), kind === 'vtt' ? 'text/vtt;charset=utf-8' : 'application/x-subrip;charset=utf-8');
+    if (!playerReadyForProject()) {
+      const noVoice = p.scenes.some(s => !s.duration) && audioMode() !== 'narration';
+      toast(noVoice ? '声（朗読）がまだない場面は、文字数からの目安の時刻です' : '上演の準備前なので、場面の中の時刻は目安です。「上演・書き出し」を開いてから書き出すと、声に合わせた時刻になります');
+      return;
+    }
+  }
+  toast('書き出しました');
 }
 
 /* ---------- YouTube用の文（タイトル・説明文・目次・ハッシュタグ） ---------- */

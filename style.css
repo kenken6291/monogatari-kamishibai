@@ -387,6 +387,10 @@ label.inline select { width: auto; margin: 0; }
   .grid4 .span2 { grid-column: 1 / -1; }
   .ol-label { width: 7em; }
 }
+/* 台本・字幕の書き出し */
+.dl-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin: .4rem 0; }
+.dl-box { margin-top: .8rem; border-top: 1px dashed var(--line); padding-top: .4rem; }
+.dl-box .note { margin: .2rem 0; }
 @media (prefers-reduced-motion: reduce) {
   .toast, .progress .bar { transition: none; }
 }
