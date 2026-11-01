@@ -57,7 +57,35 @@ function toast(msg, err = false) {
   toastTimer = setTimeout(() => t.classList.remove('show'), err ? 6000 : 3000);
 }
 
+// AIが混み合っているとき（サーバーが BUSY: を返したとき）は、少し待って自動でやり直す
+const BUSY_WAITS = [15, 30, 60];
 async function api(action, data = {}) {
+  for (let k = 0; ; k++) {
+    try { return await apiOnce(action, data); }
+    catch (e) {
+      if (!e.busy || k >= BUSY_WAITS.length) throw e;
+      for (let s = BUSY_WAITS[k]; s > 0; s--) {
+        if ((state.running && state.stop) || (storyRun.running && storyRun.stop)) throw new Error('止めました');
+        busyNote(`AIが混み合っています。${s}秒後にもう一度試します（${k + 1}/${BUSY_WAITS.length}）`);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      busyNote('');
+    }
+  }
+}
+
+function busyNote(text) {
+  let el = $('#busyNote');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'busyNote'; el.className = 'busy-note'; el.setAttribute('role', 'status');
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.hidden = !text;
+}
+
+async function apiOnce(action, data = {}) {
   const url = gasUrl();
   if (!url) { openSettings(); throw new Error('接続先（GAS URL）が未設定です'); }
   let j;
@@ -75,7 +103,9 @@ async function api(action, data = {}) {
     const msg = j.error || 'エラーが発生しました';
     if (msg.startsWith('AUTH:')) { clearSession(); showAuth('login'); }
     else if (msg.startsWith('MUST_CHANGE:')) { showAuth('change'); }
-    throw new Error(msg.replace(/^(AUTH|MUST_CHANGE):\s*/, ''));
+    const err = new Error(msg.replace(/^(AUTH|MUST_CHANGE|BUSY):\s*/, ''));
+    err.busy = msg.startsWith('BUSY:') || /\((429|500|502|503|504)\)/.test(msg);
+    throw err;
   }
   return j;
 }
@@ -2038,8 +2068,10 @@ async function alignUnit(unit, onWin) {
   const items = unit.items;
   const totalChars = items.reduce((a, x) => a + x.text.length, 0);
   const cps = Math.max(3, totalChars / Math.max(1, dur));
-  let pos = 0, k = 0, guard = 0;
+  // unit.pos / unit.k を進めながら進む（途中で止まっても、そこから再開できる）
+  let pos = unit.pos || 0, k = unit.k || 0, guard = 0;
   while (k < items.length && pos < dur - 0.5 && guard++ < 1000) {
+    unit.pos = pos; unit.k = k;
     if (state.stop) throw new Error('同期を止めました');
     const w1 = Math.min(dur, pos + SYNC_WIN);
     const isLast = w1 >= dur - 0.01;
@@ -2059,12 +2091,26 @@ async function alignUnit(unit, onWin) {
       prev = t;
       lastJ = batch[bi];
     });
-    if (isLast) break;
-    if (lastJ < 0) { pos += (w1 - pos) * 0.8; continue; }
+    if (isLast) { unit.pos = dur; unit.k = items.length; break; }
+    if (lastJ < 0) { pos += (w1 - pos) * 0.8; unit.pos = pos; continue; }
     k = lastJ + 1;
     pos = Math.max(pos + 10, items[lastJ].t + 0.3);
+    unit.pos = pos; unit.k = k;
   }
 }
+
+/* 同期の途中経過（混み合いなどで止まったとき、次は続きから） */
+function syncResumeKey() { return 'mk_sync_resume_' + state.project.id; }
+function loadSyncResume() {
+  try {
+    const r = JSON.parse(localStorage.getItem(syncResumeKey()) || 'null');
+    return r && r.sig === capSig() ? r : null;
+  } catch (e) { return null; }
+}
+function saveSyncResume(r) {
+  try { localStorage.setItem(syncResumeKey(), JSON.stringify({ ...r, sig: capSig(), at: Date.now() })); } catch (e) { }
+}
+function clearSyncResume() { try { localStorage.removeItem(syncResumeKey()); } catch (e) { } }
 
 // 確認できなかった字幕は前後の確認済みの位置から文字数で補い、声の立ち上がりに吸着させる
 function finishTimes(items, audio, t0, t1) {
@@ -2114,7 +2160,15 @@ async function runCaptionSync() {
   const estSec = mode === 'narration' ? p.narration.duration : scenes.reduce((a, s) => a + (s.audioFileId ? (s.duration || 0) : 0), 0);
   const estCalls = mode === 'narration' ? Math.ceil(estSec / (SYNC_WIN - SYNC_TAIL - 5)) : scenes.filter(s => s.audioFileId).reduce((a, s) => a + Math.max(1, Math.ceil((s.duration || 0) / (SYNC_WIN - SYNC_TAIL - 5))), 0);
   const already = p.captions && p.captions.sig === capSig();
-  if (!confirm(`${already ? '字幕はすでに同期済みです。やり直しますか？\n' : ''}朗読（約${fmtTime(estSec)}）をAIに聞かせて、場面の区切りと字幕を合わせます。AIを約${estCalls}回使います。`)) return;
+  let resume = loadSyncResume();
+  if (resume) {
+    const where = resume.mode === 'narration' ? fmtTime(resume.narr?.pos || 0) : `場面${(resume.times || []).filter(Boolean).length}つ分`;
+    if (!confirm(`前回の同期は途中（${where}まで）で止まっています。続きから再開しますか？\n「キャンセル」で最初からやり直すか選べます。`)) {
+      if (!confirm('最初から同期をやり直しますか？')) return;
+      clearSyncResume(); resume = null;
+    }
+  } else if (!confirm(`${already ? '字幕はすでに同期済みです。やり直しますか？\n' : ''}朗読（約${fmtTime(estSec)}）をAIに聞かせて、場面の区切りと字幕を合わせます。AIを約${estCalls}回使います。`)) return;
+  let partial = null;
   state.running = true; state.stop = false;
   $('#genImagesBtn').disabled = $('#genAudioBtn').disabled = $('#capSyncBtn').disabled = true;
   $('#stopBtn').hidden = false; $('#stopBtn').textContent = '止める';
@@ -2128,10 +2182,15 @@ async function runCaptionSync() {
       prog('朗読ファイルを読み込んでいます…', 0);
       const nc = await narrationBlob();
       const audio = await decodeMono16k(nc.blob);
-      const items = [];
+      let items = [];
       segs.forEach((arr, si) => arr.forEach(g => items.push({ si, text: g.text, t: null })));
+      const unit = { audio, items, pos: 0, k: 0 };
+      if (resume?.mode === 'narration' && resume.narr?.items?.length === items.length) {
+        items = unit.items = resume.narr.items; unit.pos = resume.narr.pos; unit.k = resume.narr.k;
+      }
+      partial = () => ({ mode: 'narration', narr: { items: unit.items, pos: unit.pos, k: unit.k } });
       const dur = audio.data.length / audio.rate;
-      await alignUnit({ audio, items }, (pos, d) => prog(`AIが朗読を聞いています… ${fmtTime(pos)} / ${fmtTime(d)}`, pos / d));
+      await alignUnit(unit, (pos, d) => prog(`AIが朗読を聞いています… ${fmtTime(pos)} / ${fmtTime(d)}`, pos / d));
       found = items.filter(x => x.t != null).length; total = items.length;
       if (found < Math.max(2, total * 0.2)) throw new Error('朗読と本文がほとんど一致しませんでした。朗読ファイルと本文が同じ作品か確認してください');
       finishTimes(items, audio, 0, dur);
@@ -2144,8 +2203,14 @@ async function runCaptionSync() {
       scheduleSave({ narrationStarts: p.narration.starts, narrationAligned: 'ai' });
     } else {
       const targets = scenes.map((s, i) => i).filter(i => scenes[i].audioFileId);
+      if (resume?.mode === 'scenes' && resume.times?.length === scenes.length) {
+        resume.times.forEach((t, si) => { if (t && t.length === segs[si].length) times[si] = t; });
+        found = resume.found || 0; total = resume.total || 0;
+      }
+      partial = () => ({ mode: 'scenes', times, found, total });
       for (let n = 0; n < targets.length; n++) {
         const si = targets[n];
+        if (times[si]) continue; // 前回同期できた場面
         if (state.stop) throw new Error('同期を止めました');
         prog(`AIが朗読を聞いています… 場面${si + 1}（${n + 1}/${targets.length}）`, n / targets.length);
         const audio = await decodeMono16k((await asset(scenes[si].audioFileId)).blob);
@@ -2158,14 +2223,23 @@ async function runCaptionSync() {
       // 音声のない場面は文字数で割り振る
       scenes.forEach((s, si) => { if (!times[si]) times[si] = alignCaps(segs[si], null, 0, sceneDur(s)).map(c => Math.round(c.from * 100) / 100); });
     }
+    clearSyncResume();
     p.captions = { sig: capSig(), abs: mode === 'narration', times, found, total, at: new Date().toISOString() };
     scheduleSave({ captions: p.captions });
     await flushSave();
     prog(`同期が終わりました（${found}/${total}文をAIが確認、残りは前後から補完）`, 1);
     toast('字幕を音声に合わせました。「上演・書き出し」で確かめてください');
   } catch (e) {
-    prog('同期を中断しました', 0);
-    toast(e.message, true);
+    const part = partial && partial();
+    const done = part && (part.mode === 'narration' ? part.narr.items.some(x => x.t != null) : part.times.some(Boolean));
+    if (done) {
+      saveSyncResume(part);
+      prog('同期を中断しました（ここまでの結果は残っています。もう一度押すと続きから再開します）', 0);
+      toast(e.message + '　もう一度「AIで場面と字幕を合わせる」を押すと、続きから再開します', true);
+    } else {
+      prog('同期を中断しました', 0);
+      toast(e.message, true);
+    }
   } finally {
     state.running = false;
     $('#genImagesBtn').disabled = $('#genAudioBtn').disabled = false;

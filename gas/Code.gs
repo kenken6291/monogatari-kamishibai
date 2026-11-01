@@ -4,7 +4,7 @@
  * ものがたりモード：テーマ → AI脚本（セリフ・ナレーション）→ 人物ごとの声 → 吹き出しで上演
  * 保存先：Google Drive（作品ごとにフォルダ / project.json）＋会員はスプレッドシート
  */
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '2.2.1';
 const SP = PropertiesService.getScriptProperties();
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const USER_COLS = ['email', 'name', 'salt', 'hash', 'mustChange', 'createdAt', 'agreedAt', 'lastLogin', 'failCount', 'lockedUntil'];
@@ -374,18 +374,40 @@ function callGemini(modelName, body, thinkingBudget) {
     method: 'post', contentType: 'application/json', muteHttpExceptions: true,
     headers: { 'x-goog-api-key': key }, payload: JSON.stringify(body)
   };
-  let res, code, txt;
-  for (let i = 0; i < 3; i++) {
-    res = UrlFetchApp.fetch(GEMINI_BASE + modelName + ':generateContent', opt);
-    code = res.getResponseCode();
-    txt = res.getContentText();
-    if (code === 200) { const r = JSON.parse(txt); logUsage(modelName, r.usageMetadata); return r; }
-    if ([429, 500, 503].indexOf(code) < 0) break;
-    Utilities.sleep(3000 * (i + 1));
+  // 混み合い（429/500/503）のときは待って再試行し、だめなら控えのモデルに切り替える
+  const models = [modelName];
+  const fb = fallbackModel(modelName);
+  if (fb && fb !== modelName) models.push(fb);
+  let res, code, txt, used = modelName;
+  for (let m = 0; m < models.length; m++) {
+    used = models[m];
+    if (m > 0) { withThinking(used, body, thinkingBudget); opt.payload = JSON.stringify(body); }
+    const waits = m === 0 ? [2000, 5000, 9000] : [3000, 6000];
+    for (let i = 0; i <= waits.length; i++) {
+      res = UrlFetchApp.fetch(GEMINI_BASE + used + ':generateContent', opt);
+      code = res.getResponseCode();
+      txt = res.getContentText();
+      if (code === 200) { const r = JSON.parse(txt); logUsage(used, r.usageMetadata); return r; }
+      if (BUSY_CODES.indexOf(code) < 0) break;
+      if (i < waits.length) Utilities.sleep(waits[i]);
+    }
+    if (BUSY_CODES.indexOf(code) < 0) break;
   }
   let msg = txt;
   try { msg = JSON.parse(txt).error.message; } catch (e) { }
+  if (BUSY_CODES.indexOf(code) >= 0) {
+    throw new Error('BUSY: AIが混み合っています（Gemini ' + code + '）。しばらく待ってから、もう一度お試しください');
+  }
   throw new Error('Gemini APIエラー(' + code + '): ' + String(msg).slice(0, 300));
+}
+
+const BUSY_CODES = [429, 500, 502, 503, 504];
+
+// 混み合ったときの控えのモデル（スクリプトプロパティで変更・空欄で無効）
+function fallbackModel(name) {
+  if (/tts/.test(name)) return prop('FALLBACK_TTS_MODEL', '');
+  if (/image/.test(name)) return prop('FALLBACK_IMAGE_MODEL', '');
+  return prop('FALLBACK_TEXT_MODEL', 'gemini-2.5-flash-lite');
 }
 
 function textOf(res) {
