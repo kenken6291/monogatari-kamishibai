@@ -768,8 +768,9 @@ function applyKindUi() {
   $('#voiceNote').textContent = story && state.project.narratorName
     ? `一人称の語りなので、ナレーションは「${state.project.narratorName}」の声で読みます。`
     : '人物のセリフは、下の「登場人物」で人物ごとに声を選べます。';
-  $('.narr').hidden = story;
-  $('.capsync').hidden = story;
+  // 物語でも、作品まるごとの朗読ファイル（自分で録ったナレーションなど）を取り込めるようにする
+  $('#narrBox').hidden = false;
+  $('#capsyncBox').hidden = story;
   $('#genAudioBtn').textContent = story ? '声を一括生成' : '朗読を一括生成';
   $('#subLabel').textContent = story ? 'セリフ・ナレーションを表示' : '字幕を表示';
   $('#capAdjLabel').firstChild.textContent = story ? 'セリフのタイミング' : '字幕のタイミング';
@@ -1275,8 +1276,31 @@ function storySegments(text, maxLen) {
   return out;
 }
 
+// 取り込んだ朗読ファイル（作品まるごと1本）で上演するとき：
+// 字幕同期（AIで場面と字幕を合わせる）の結果があればその時刻、なければ場面の長さを文字数で割り振る。
+// 字幕の区切りは行ごとなので、区切りごとに話す人を当てはめる
+function buildStoryNarrCaptions(maxLen) {
+  const p = state.project;
+  const times = sceneTimes();
+  const saved = savedCaptions(maxLen);
+  return p.scenes.map((s, i) => {
+    const lines = s.lines || [];
+    const segs = capSegments(s.text, maxLen);
+    const caps = saved ? saved[i] : alignCaps(segs, null, 0, times[i].dur);
+    const who = [];
+    lines.forEach(l => capSegments(l.text, maxLen).forEach(() => who.push(l)));
+    const slots = {};
+    return caps.map((c, k) => {
+      const l = who[k] || { speaker: NARRATOR, tone: 'normal' };
+      if (l.speaker !== NARRATOR && !(l.speaker in slots)) slots[l.speaker] = Object.keys(slots).length;
+      return { text: c.text, from: c.from, to: c.to, speaker: l.speaker, tone: l.tone || 'normal', slot: slots[l.speaker] || 0 };
+    });
+  });
+}
+
 // 吹き出しの表示時刻：行ごとの時刻（声の生成時に記録）＋行の中は声の間に合わせる
 function buildStoryCaptions(maxLen) {
+  if (audioMode() === 'narration') return buildStoryNarrCaptions(maxLen);
   return state.project.scenes.map((s, i) => {
     const lines = s.lines || [];
     if (!lines.length) return [];
@@ -2173,6 +2197,7 @@ async function runCaptionSync() {
   $('#genImagesBtn').disabled = $('#genAudioBtn').disabled = $('#capSyncBtn').disabled = true;
   $('#stopBtn').hidden = false; $('#stopBtn').textContent = '止める';
   $('#progressWrap').hidden = false;
+  $('#progressWrap').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   const prog = (t, r) => { $('#progressBar').style.width = (r * 100).toFixed(1) + '%'; $('#progressText').textContent = t; };
   try {
     await flushSave();

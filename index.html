@@ -310,7 +310,7 @@
 
       <!-- 3 場面と生成 -->
       <div class="pane" id="pane3" hidden>
-        <fieldset class="box narr">
+        <fieldset class="box narr" id="narrBox">
           <legend>朗読の音声</legend>
           <div class="modes">
             <label><input type="radio" name="audioMode" value="scenes"> 場面ごとの音声（AI生成、または場面ごとに取り込み）</label>
@@ -334,7 +334,7 @@
             <button class="btn ghost" id="effReplaceBtn">使わない動きだけ置き換える</button>
           </div>
         </fieldset>
-        <fieldset class="box capsync">
+        <fieldset class="box capsync" id="capsyncBox">
           <legend>字幕の同期</legend>
           <div class="tools">
             <button class="btn primary" id="capSyncBtn">AIで字幕を音声に合わせる</button>
