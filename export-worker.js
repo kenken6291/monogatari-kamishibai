@@ -150,6 +150,7 @@ async function run(m) {
   };
 
   const drawCaption = (i, el) => {
+    if (story && m.compare && scenes[i].side) KamiBubble.drawSide(g, W, H, scenes[i].side, m.compare, el, FONT);
     if (story && i === 0) KamiBubble.drawTitle(g, W, H, m.title, el, FONT);
     else if (story && scenes[i].chapter) KamiBubble.drawChapter(g, W, H, scenes[i].chapter, el, FONT);
     if (!subtitles) return;

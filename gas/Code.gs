@@ -4,7 +4,7 @@
  * ものがたりモード：テーマ → AI脚本（セリフ・ナレーション）→ 人物ごとの声 → 吹き出しで上演
  * 保存先：Google Drive（作品ごとにフォルダ / project.json）＋会員はスプレッドシート
  */
-const APP_VERSION = '2.2.1';
+const APP_VERSION = '2.3.0';
 const SP = PropertiesService.getScriptProperties();
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const USER_COLS = ['email', 'name', 'salt', 'hash', 'mustChange', 'createdAt', 'agreedAt', 'lastLogin', 'failCount', 'lockedUntil'];
@@ -310,6 +310,7 @@ function saveProject(req, u) {
         inP.scenes.forEach((s, i) => {
           ['summary', 'location', 'characters', 'imagePrompt'].forEach(f => { if (s[f] !== undefined) p.scenes[i][f] = s[f]; });
           if (EFFECTS.indexOf(s.effect) >= 0) p.scenes[i].effect = s.effect;
+          if (s.side !== undefined) p.scenes[i].side = cleanSide(s.side);
           if (Array.isArray(s.lines) && p.scenes[i].lines) updateLines(p.scenes[i], s.lines);
         });
       } else if (k === 'characters') {
@@ -331,6 +332,7 @@ function saveProject(req, u) {
         if (!o || !cur) return;
         ['title', 'description'].forEach(f => { if (typeof o[f] === 'string') cur[f] = o[f].slice(0, f === 'title' ? 80 : 2000); });
         if (Array.isArray(o.tags)) cur.tags = o.tags.map(t => String(t).replace(/^#/, '').trim()).filter(Boolean).slice(0, 15);
+        if (o.compare && cur.compare) ['A', 'B'].forEach(k => { if (o.compare[k] && typeof o.compare[k].label === 'string') cur.compare[k].label = o.compare[k].label.slice(0, 16); });
         if (Array.isArray(o.chapters) && o.chapters.length === cur.chapters.length) {
           o.chapters.forEach((c, i) => {
             ['label', 'title', 'plot'].forEach(f => { if (typeof c[f] === 'string') cur.chapters[i][f] = c[f].slice(0, f === 'plot' ? 800 : 40); });
@@ -666,7 +668,10 @@ function generateImage(req, u) {
       '場所：' + (s.location || ''),
       '場面：' + (s.imagePrompt || s.summary),
       p.kind === 'story' ? '漫画動画の1コマとして、人物の表情と身ぶりを大きくはっきり描く。あとから吹き出しを重ねるので、人物の顔は画面の中ほどに置き、上の端に少し空きを残す。' : '',
-      '注意：文字・吹き出し・効果音の文字・ロゴ・コマ割り・枠線は入れない。1枚の絵として描く。'
+      compareImageNote(p, s),
+      s.side === 'both'
+        ? '注意：文字・吹き出し・効果音の文字・ロゴは入れない。画面の中央に細い縦の境目を1本だけ入れて左右2つに分け、それ以外のコマ割り・枠線は入れない。'
+        : '注意：文字・吹き出し・効果音の文字・ロゴ・コマ割り・枠線は入れない。1枚の絵として描く。'
     ].filter(x => x).join('\n')
   });
   const data = inlineOf(callGemini(model('image'), {
@@ -1172,6 +1177,7 @@ function getUsage(req, u) {
 /* ========== ⑤ ものがたりモード（AI脚本・人物ごとの声） ========== */
 const GENRES = {
   senior: 'シニアの人生物語・○つの教え（定年前後の主人公が、人生の先輩や出会いから、毎日を豊かにする教えを1つずつ学んでいく漫画物語。YouTubeの「人生の公民館」「穏やかな晩年」のような、やさしく落ち着いた語り口）',
+  compare: '比較・違い（同じような境遇の2人が、日々の小さな選択や考え方の違いで、数年後にまったく違う暮らしになっていく対比の漫画物語。YouTubeの「老後に幸せな人と不幸な人の違い」「○○な人と○○な人の差」のように、違いを1つずつ見比べ、最後に結末の差を見せる。片方を悪者や笑い者にせず、うまくいかない側にも事情と気づきの余地を残す）',
   omakase: 'おまかせ（テーマに一番合うジャンルを選ぶ）',
   sukatto: 'スカッと・逆転劇（理不尽な相手に主人公が耐え、最後に機転・証拠・周りの助けで痛快に逆転する。因果応報。暴力で解決しない）',
   kandou: '感動・泣ける（すれ違いや喪失から、思いやりが伝わる結末へ。涙を誘う回想や手紙などの小道具が効果的）',
@@ -1192,6 +1198,13 @@ const TELLS = {
 const TEMPO_SEC = { slow: 20, normal: 12, fast: 7 };
 const STORY_MINUTES = [3, 5, 10, 15, 20, 25, 30];
 const LESSON_WORDS = { habit: '習慣', important: '大切なこと', teach: '教え', hint: 'ヒント', secret: '秘訣' };
+const COMPARE_WORDS = { diff: '違い', habit: '習慣', choice: '選択', fork: '分かれ道', trait: '特徴' };
+const COMPARE_STYLES = {
+  alt: '違いごとに見比べる（1章に違いを1つ。同じ場面で、まず片方、次にもう片方の行動を見せて比べる）',
+  twolife: '2人の人生を順に描く（前半でAの人生、後半でBの人生を通して描き、最後に並べて比べる）',
+  fork: 'もしもの分かれ道（同じ1人の主人公が、ある日の選択でAの道とBの道に分かれた2つの人生を見比べる）'
+};
+const SIDES = ['A', 'B', 'both', ''];
 const CHARS_PER_SEC_SPOKEN = 6.0; // セリフの間を含めた読み上げの速さの目安
 
 function cleanLine(l) {
@@ -1302,16 +1315,23 @@ function storyPlan(p) {
   const idea = p.storyIdea || {};
   const genre = GENRES[idea.genre] ? idea.genre : 'omakase';
   const senior = genre === 'senior';
-  const tell = TELLS[idea.tell] ? idea.tell : (senior ? 'narration' : 'dialog');
+  const compare = genre === 'compare';
+  const tell = TELLS[idea.tell] ? idea.tell : (senior || compare ? 'narration' : 'dialog');
   const minutes = STORY_MINUTES.indexOf(Number(idea.minutes)) >= 0 ? Number(idea.minutes) : 5;
   const sec = TEMPO_SEC[idea.tempo] || TEMPO_SEC.normal;
   const want = Math.max(4, Math.min(MAX_SCENES, Math.round(minutes * 60 / sec)));
   const lessons = Math.max(3, Math.min(7, Number(idea.lessons) || 5));
   const word = idea.lessonWord === 'auto' ? '' : (LESSON_WORDS[idea.lessonWord] || (senior ? '習慣' : ''));
+  const cmpStyle = COMPARE_STYLES[idea.cmpStyle] ? idea.cmpStyle : 'alt';
+  const cmpCount = Math.max(3, Math.min(7, Number(idea.cmpCount) || 5));
+  const cmpWord = idea.cmpWord === 'auto' ? '' : (COMPARE_WORDS[idea.cmpWord] || '違い');
   return {
-    idea: idea, genre: genre, senior: senior, tell: tell, minutes: minutes, sec: sec, want: want,
+    idea: idea, genre: genre, senior: senior, compare: compare, tell: tell, minutes: minutes, sec: sec, want: want,
     totalChars: Math.round(minutes * 60 * CHARS_PER_SEC_SPOKEN),
     lessons: lessons, word: word,
+    cmpStyle: cmpStyle, cmpCount: cmpCount, cmpWord: cmpWord,
+    cmpA: String(idea.cmpA || '').slice(0, 40), cmpB: String(idea.cmpB || '').slice(0, 40),
+    cmpHeroA: String(idea.cmpHeroA || '').slice(0, 300), cmpHeroB: String(idea.cmpHeroB || '').slice(0, 300),
     theme: String(idea.theme || '').slice(0, 4000),
     notes: String(idea.notes || '').slice(0, 1500),
     hero: String(idea.hero || '').slice(0, 300),
@@ -1332,6 +1352,75 @@ function storyCommonRules() {
   ];
 }
 
+/* ---- 比較版（2人・2つの道を見比べる物語） ---- */
+function cleanSide(v) { return SIDES.indexOf(v) >= 0 ? v : (v === 'none' ? '' : ''); }
+
+function compareHeader(P) {
+  return [
+    '【比べ方】' + COMPARE_STYLES[P.cmpStyle],
+    '【比べる2つの側】A：' + (P.cmpA || '（おまかせ。うまくいく側）') + '　／　B：' + (P.cmpB || '（おまかせ。うまくいかない側）'),
+    P.cmpHeroA ? '【Aの人物】' + P.cmpHeroA : '',
+    P.cmpHeroB && P.cmpStyle !== 'fork' ? '【Bの人物】' + P.cmpHeroB : '',
+    P.cmpStyle === 'fork' && P.cmpHeroB ? '【分かれ道のきっかけ】' + P.cmpHeroB : ''
+  ].filter(x => x).join('\n');
+}
+
+function compareChapterRule(P) {
+  const n = P.cmpCount;
+  const w = P.cmpWord || '○○（テーマに合う言葉）';
+  const labelRule = '　label は「1つ目の' + w + '」「2つ目の' + w + '」…の形。title はその' + (P.cmpWord || '違い') + 'を短い言葉で（15字以内、例：朝の過ごし方、頼れる人がいるか）。';
+  const common = [
+    '・どの' + (P.cmpWord || '違い') + 'も、明日から真似できる具体的で小さな行動・考え方の差にする。お金・健康・家族・人づきあい・趣味など、テーマに合う分野から偏らずに選ぶ。',
+    '・うまくいかない側（B）も、悪人や笑い者にしない。そうなる事情や気持ちも描き、視聴者が「自分にもある」と感じられるようにする。',
+    '・label：プロローグは「プロローグ」、結末の章は「○年後」（テーマに合う年数）、最後は「エピローグ」。'
+  ];
+  if (P.cmpStyle === 'twolife') {
+    const half = Math.ceil(n / 2);
+    return [
+      '・章は次の順で、合計 ' + (n + 3) + ' 章にする。',
+      '　1章目「プロローグ」：同じような境遇（年齢・立場）のAとBを紹介し、2人がどこで分かれていくのかという問いでつかむ。',
+      '　2章目〜' + (half + 1) + '章目：Aの人生。' + w + 'を1章に1つずつ、Aの行動として描く。',
+      '　' + (half + 2) + '章目〜' + (n + 1) + '章目：Bの人生。前半で描いたAの' + w + 'と対になる形で、Bの行動として描く（Aを思い出させる一言を入れる）。',
+      labelRule,
+      '　' + (n + 2) + '章目「○年後」：2人の今を並べて見せ、' + n + 'つの' + w + 'が積み重なった差をはっきり描く。',
+      '　最後の章「エピローグ」：2人がどこかで再会する、またはBが気づいて一歩を踏み出すなど、希望の残る余韻。最後は視聴者への問いかけで終える。',
+      ...common
+    ];
+  }
+  return [
+    '・章は次の順で、合計 ' + (n + 3) + ' 章にする。',
+    P.cmpStyle === 'fork'
+      ? '　1章目「プロローグ」：主人公の今と、人生の分かれ道になるある日の出来事。「もしあの日、別の道を選んでいたら」という問いでつかむ。'
+      : '　1章目「プロローグ」：同じような境遇（同い年・元同僚・ご近所など）のAとBを紹介。冒頭の一言で視聴者が「自分はどちらだろう」と感じるつかみを入れる。',
+    '　2章目〜' + (n + 1) + '章目：' + w + 'を1章に1つずつ、全部で' + n + 'つ。どの章も、同じ状況でのBの行動 → Aの行動 → その結果の小さな差、の順に見せる。',
+    labelRule,
+    '　' + (n + 2) + '章目「○年後」：' + n + 'つの' + w + 'が積み重なって、2人（2つの道）の暮らしに大きな差が出た姿を並べて見せる。',
+    '　最後の章「エピローグ」：Bの側にも気づきと小さな希望を残し、あたたかく締める。最後は視聴者への問いかけ（「あなたはどちらに近いですか」など）で終える。',
+    ...common
+  ];
+}
+
+function compareChapterNote(P, o) {
+  const c = o.compare || { A: { label: P.cmpA || 'A', name: '' }, B: { label: P.cmpB || 'B', name: '' } };
+  return [
+    '【比べ方】' + COMPARE_STYLES[P.cmpStyle],
+    '【A】' + c.A.label + (c.A.name ? '（中心人物：' + c.A.name + '）' : ''),
+    '【B】' + c.B.label + (c.B.name ? '（中心人物：' + c.B.name + '）' : ''),
+    '・ナレーションで「一方、○○さんは…」「同じ朝、○○さんは…」のように、AとBの切り替えをはっきり言葉にする。',
+    P.cmpStyle === 'alt' ? '・' + (P.cmpWord || '違い') + 'の章は、Bの場面 → Aの場面 → 見比べ（both）の場面 → 小さなまとめ、の流れにする。まとめのナレーションで、その' + (P.cmpWord || '違い') + 'を一言で言い表す。' : '',
+    P.cmpStyle === 'fork' ? '・同じ主人公の2つの道なので、Aの道とBの道で服装・表情・部屋の様子などを変え、どちらの道かがひと目でわかるようにする。' : ''
+  ].filter(x => x).join('\n');
+}
+
+// 比較版の絵：どちらの側かで色調を変え、ひと目で見分けられるようにする
+function compareImageNote(p, s) {
+  const c = p.storyOutline && p.storyOutline.compare;
+  if (!c || !s.side) return '';
+  if (s.side === 'A') return 'この場面は「' + c.A.label + '」の側。明るく暖かい色調、やわらかな光で描く。';
+  if (s.side === 'B') return 'この場面は「' + c.B.label + '」の側。少し彩度を落とした、落ち着いた寒色寄りの色調で描く（暗くしすぎない）。';
+  return '画面を左右に分けた見比べの1枚絵。左半分は「' + c.A.label + '」（明るく暖かい色調）、右半分は「' + c.B.label + '」（少し沈んだ寒色寄りの色調）。左右で同じ構図・同じアングルにして、違いが際立つように描く。左右の上の端に、あとで札を重ねる少しの空きを残す。';
+}
+
 /* ---- ① 物語の設計図（タイトル・登場人物・章立て・YouTube用の文） ---- */
 function storyOutline(req, u) {
   const p = readProject(projectFolder(u, req.projectId));
@@ -1346,6 +1435,8 @@ function storyOutline(req, u) {
       '　最後の章「エピローグ」：季節が移り、主人公が変わった姿。今度は主人公が誰かに教えを手渡すなど、あたたかい余韻で締める。最後は視聴者への問いかけ（「あなたの〜は何ですか」など）のナレーションで終える。',
       '・label：プロローグは「プロローグ」、出会いの章は「出会い」、最後は「エピローグ」。'
     ];
+  } else if (P.compare) {
+    chapterRule = compareChapterRule(P);
   } else {
     chapterRule = [
       '・章は3〜8章。起承転結がはっきりした流れにする。',
@@ -1359,14 +1450,15 @@ function storyOutline(req, u) {
     '【ジャンル】' + GENRES[P.genre],
     '【語り口】' + TELLS[P.tell],
     '【長さ】約' + P.minutes + '分（読み上げる文字の合計は約' + P.totalChars + '字）',
-    P.hero ? '【主人公】' + P.hero : '',
-    P.mentor ? '【導き役・相手役】' + P.mentor : '',
+    P.compare ? compareHeader(P) : '',
+    !P.compare && P.hero ? '【主人公】' + P.hero : '',
+    !P.compare && P.mentor ? '【導き役・相手役】' + P.mentor : '',
     P.notes ? '【そのほかの希望】' + P.notes : '',
     '',
     '【章立て（chapters）】',
     ...chapterRule,
     '・plot：その章で起きることを、具体的な出来事・小道具・印象に残る一言を入れて120〜250字で。前後の章とつながるように。',
-    '・share：全体の長さに対するその章の割合（％、整数）。全章の合計を100にする。' + (P.senior ? 'プロローグは10〜15、出会いは8〜12、教えの章は均等に、エピローグは8〜12くらい。' : '山場の章を多めに。'),
+    '・share：全体の長さに対するその章の割合（％、整数）。全章の合計を100にする。' + (P.senior ? 'プロローグは10〜15、出会いは8〜12、教えの章は均等に、エピローグは8〜12くらい。' : P.compare ? 'プロローグは8〜12、結末の章は12〜18、エピローグは6〜10、残りを均等に。' : '山場の章を多めに。'),
     '',
     '【cast（登場人物）】',
     '・2〜6人。name は物語の中の呼び名（フルネームより「浩二」「三上さん」のような呼び名）。',
@@ -1375,9 +1467,10 @@ function storyOutline(req, u) {
     voiceListText(),
     P.known.length ? '・次の人物は登録済み。名前・特徴を変えずに主要人物として登場させる（cast にもそのまま入れる）：\n' + P.known.map(c => '　・' + c.name + '：' + c.features).join('\n') : '',
     P.tell === 'first' ? '・narrator：一人称で語る主人公の name。' : '',
+    P.compare ? '・sideA / sideB：比べる2つの側。label は画面の札に出す短い呼び名（10字以内、例：幸せな人／後悔する人、続けた道／やめた道）。name はその側の中心人物の name（cast と同じ名前）。' + (P.cmpStyle === 'fork' ? '分かれ道の形なので、A・Bの name は同じ主人公にする。' : 'A・Bは別の人物にし、見た目（髪型・服の色）をはっきり描き分ける。') : '',
     '',
     '【YouTube用】',
-    '・title：動画のタイトル。目を引く40字以内。' + (P.senior ? '例のような形：「【漫画】定年後、人生を幸せに感じている60代の、5つの習慣」' : ''),
+    '・title：動画のタイトル。目を引く40字以内。' + (P.senior ? '例のような形：「【漫画】定年後、人生を幸せに感じている60代の、5つの習慣」' : P.compare ? '例のような形：「【漫画】老後に「幸せな人」と「後悔する人」の' + P.cmpCount + 'つの' + (P.cmpWord || '違い') + '」' : ''),
     '・description：動画の説明文。物語の導入（主人公と悩み・出会い）を、結末を明かさずに200〜400字。最後に、視聴者がコメントしたくなる問いかけを1文。',
     '・tags：ハッシュタグにする言葉を5〜10個（#は付けない）。',
     '',
@@ -1390,6 +1483,8 @@ function storyOutline(req, u) {
       title: { type: 'STRING' }, description: { type: 'STRING' },
       tags: { type: 'ARRAY', items: { type: 'STRING' } },
       narrator: { type: 'STRING' },
+      sideA: { type: 'OBJECT', properties: { label: { type: 'STRING' }, name: { type: 'STRING' } } },
+      sideB: { type: 'OBJECT', properties: { label: { type: 'STRING' }, name: { type: 'STRING' } } },
       cast: { type: 'ARRAY', items: { type: 'OBJECT', properties: { name: { type: 'STRING' }, features: { type: 'STRING' }, voice: { type: 'STRING' } }, required: ['name', 'features', 'voice'] } },
       chapters: { type: 'ARRAY', items: { type: 'OBJECT', properties: { label: { type: 'STRING' }, title: { type: 'STRING' }, plot: { type: 'STRING' }, share: { type: 'NUMBER' } }, required: ['label', 'title', 'plot', 'share'] } }
     }, required: ['title', 'description', 'tags', 'cast', 'chapters']
@@ -1422,6 +1517,13 @@ function storyOutline(req, u) {
     narrator: String(out.narrator || ''),
     chapters: chapters
   };
+  if (P.compare) {
+    const side = (o, label) => ({ label: String(o && o.label || label).slice(0, 16), name: String(o && o.name || '').slice(0, 30) });
+    outline.compare = { style: P.cmpStyle, A: side(out.sideA, P.cmpA || 'A'), B: side(out.sideB, P.cmpB || 'B') };
+    // 利用者が呼び名を指定したときは、そちらを優先
+    if (P.cmpA) outline.compare.A.label = P.cmpA.slice(0, 16);
+    if (P.cmpB) outline.compare.B.label = P.cmpB.slice(0, 16);
+  }
   return {
     project: withProject(u, p.id, pp => {
       pp.kind = 'story';
@@ -1461,6 +1563,7 @@ function storyChapter(req, u) {
     '',
     '【物語のタイトル】' + (p.title || o.title),
     '【ジャンル】' + GENRES[P.genre],
+    P.compare ? compareChapterNote(P, o) : '',
     '【語り口】' + TELLS[P.tell],
     P.notes ? '【そのほかの希望】' + P.notes : '',
     '【登場人物】',
@@ -1477,7 +1580,7 @@ function storyChapter(req, u) {
     '【構成】',
     '・場面（絵1枚）を必ず ' + want + ' 個つくる。この章で読み上げる文字の合計は約' + (ch.chars || want * perScene) + '字、1場面の平均は約' + perScene + '字。',
     ci === 0 ? '・1場面目は、見どころを予感させる強い「つかみ」から始める。' : '・前の章の終わりから自然につなげる。章の最初の場面では、ナレーションで章のテーマを短く示す。',
-    ci === o.chapters.length - 1 ? '・最後の場面は、物語全体の余韻で締める。' + (P.senior ? '最後のナレーションは視聴者への問いかけにする。' : '') : '・この章の終わりは、次の章へ興味がつながる一言で締める。',
+    ci === o.chapters.length - 1 ? '・最後の場面は、物語全体の余韻で締める。' + (P.senior || P.compare ? '最後のナレーションは視聴者への問いかけにする。' : '') : '・この章の終わりは、次の章へ興味がつながる一言で締める。',
     P.senior ? '・教えの章では、先輩（導き役）の言葉を、押しつけにならない、やさしく印象に残る一言にする。主人公が実際にやってみる具体的な場面と、小さな変化（表情・会話・景色）を描く。' : '',
     '',
     '【lines（読み上げる文）のルール】',
@@ -1491,7 +1594,8 @@ function storyChapter(req, u) {
     '・summary：場面のあらすじを40字以内。location：場所と時間帯・季節。',
     '・characters：その場面の絵に描く人物（登場人物の名前と完全一致。' + NARRATOR + 'は入れない）。',
     '・imagePrompt：その場面の1枚絵の具体的な描写（構図、人物の表情・動作、背景、時間帯、天候、カメラアングル）を120字以内。文字や吹き出しは含めない。同じ構図が続かないよう、寄り・引き・手元のアップ・風景なども混ぜる。',
-    '・effect：' + cleanAllowed(p.allowedEffects).join(' / ') + ' から1つ（同じ動きを3回以上続けない）。'
+    '・effect：' + cleanAllowed(p.allowedEffects).join(' / ') + ' から1つ（同じ動きを3回以上続けない）。',
+    P.compare ? '・side：その場面がどちらの側か。A／B／both（左右に並べて見比べる1枚絵）／none（どちらでもない導入・まとめ）。both の imagePrompt は「左半分に…、右半分に…」の形で、左にA、右にBを同じ構図・同じ時間帯で描き分ける。both は各章に1場面ほど、ここぞという見比べの場面に使う。' : ''
   ].filter(x => x !== '').join('\n');
 
   const schema = {
@@ -1502,7 +1606,7 @@ function storyChapter(req, u) {
           type: 'OBJECT', properties: {
             summary: { type: 'STRING' }, location: { type: 'STRING' },
             characters: { type: 'ARRAY', items: { type: 'STRING' } },
-            imagePrompt: { type: 'STRING' }, effect: { type: 'STRING' },
+            imagePrompt: { type: 'STRING' }, effect: { type: 'STRING' }, side: { type: 'STRING' },
             lines: { type: 'ARRAY', items: { type: 'OBJECT', properties: { speaker: { type: 'STRING' }, text: { type: 'STRING' }, tone: { type: 'STRING' } }, required: ['speaker', 'text', 'tone'] } }
           }, required: ['summary', 'location', 'characters', 'imagePrompt', 'effect', 'lines']
         }
@@ -1527,6 +1631,7 @@ function storyChapter(req, u) {
       characters: (s.characters || []).filter(n => names.indexOf(n) >= 0),
       imagePrompt: String(s.imagePrompt || s.summary || ''),
       effect: s.effect,
+      side: P.compare ? cleanSide(s.side) : '',
       lines: lines, text: linesText(lines),
       imageFileId: null, bgRefFileId: null, audioFileId: null, duration: 0
     };

@@ -398,3 +398,13 @@ label.inline select { width: auto; margin: 0; }
 @media (prefers-reduced-motion: reduce) {
   .toast, .progress .bar { transition: none; }
 }
+
+/* 比較版（A・B） */
+.grid4 .span4 { grid-column: 1 / -1; margin-top: 0; }
+.side-tag { display: inline-block; font-size: .75rem; font-weight: 700; color: #fff; border-radius: 99px; padding: 0 .7em; white-space: nowrap; }
+.side-tag.A { background: #c2410c; }
+.side-tag.B { background: #33507a; }
+.side-tag.both { background: linear-gradient(90deg, #c2410c 50%, #33507a 50%); }
+.cmp-labels { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; margin: 0 0 .6rem; }
+.cmp-labels label { display: flex; align-items: center; gap: .4rem; margin: 0; }
+.cmp-labels input { width: 12em; margin: 0; }

@@ -24,7 +24,8 @@ const VOICES = [
 ];
 const TONE_MARK = { shout: '叫', think: '心', whisper: '小声' };
 const TEMPO_SEC = { slow: 20, normal: 12, fast: 7 };
-const STORY_DEFAULT = { theme: '', genre: 'senior', tell: 'narration', minutes: 25, tempo: 'normal', notes: '', useChars: true, lessons: 5, lessonWord: 'habit', hero: '', mentor: '', capStyle: 'bottom', cards: true };
+const STORY_DEFAULT = { theme: '', genre: 'senior', tell: 'narration', minutes: 25, tempo: 'normal', notes: '', useChars: true, lessons: 5, lessonWord: 'habit', hero: '', mentor: '', capStyle: 'bottom', cards: true,
+  cmpStyle: 'alt', cmpCount: 5, cmpWord: 'diff', cmpA: '', cmpB: '', cmpHeroA: '', cmpHeroB: '', sideBadge: true };
 const FONT_STAGE = '"Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", sans-serif';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -735,6 +736,7 @@ function initEditor() {
     s.location = $('#smLocation').value;
     s.characters = $('#smChars').value.split(/[、,，]\s*/).map(x => x.trim()).filter(Boolean);
     s.imagePrompt = $('#smPrompt').value;
+    if (compareOf()) s.side = $('#smSide').value;
     let voiceReset = false;
     if (isStory() && s.lines) {
       const next = parseLines($('#smLines').value);
@@ -795,7 +797,17 @@ function loadStoryForm() {
   $('#stMentor').value = d.mentor;
   $('#capStyle').value = d.capStyle;
   $('#cardToggle').checked = d.cards !== false;
+  $('#stCmpStyle').value = d.cmpStyle;
+  $('#stCmpCount').value = String(d.cmpCount);
+  $('#stCmpWord').value = d.cmpWord;
+  $('#stCmpA').value = d.cmpA;
+  $('#stCmpB').value = d.cmpB;
+  $('#stCmpHeroA').value = d.cmpHeroA;
+  $('#stCmpHeroB').value = d.cmpHeroB;
+  $('#sideToggle').checked = d.sideBadge !== false;
   $('#seniorOpts').hidden = d.genre !== 'senior';
+  $('#compareOpts').hidden = d.genre !== 'compare';
+  renderCmpHeroLabels();
   renderStoryEstimate();
   renderOutline();
   renderScript();
@@ -811,8 +823,21 @@ function readStoryForm() {
     notes: $('#stNotes').value.slice(0, 1500), useChars: $('#stUseChars').checked,
     lessons: Number($('#stLessons').value) || 5, lessonWord: $('#stLessonWord').value,
     hero: $('#stHero').value.slice(0, 300), mentor: $('#stMentor').value.slice(0, 300),
-    capStyle: $('#capStyle').value, cards: $('#cardToggle').checked
+    capStyle: $('#capStyle').value, cards: $('#cardToggle').checked,
+    cmpStyle: $('#stCmpStyle').value, cmpCount: Number($('#stCmpCount').value) || 5, cmpWord: $('#stCmpWord').value,
+    cmpA: $('#stCmpA').value.slice(0, 16), cmpB: $('#stCmpB').value.slice(0, 16),
+    cmpHeroA: $('#stCmpHeroA').value.slice(0, 300), cmpHeroB: $('#stCmpHeroB').value.slice(0, 300),
+    sideBadge: $('#sideToggle').checked
   };
+}
+
+// 「もしもの分かれ道」は主人公が1人なので、Bの欄を「分かれ道のきっかけ」にする
+function renderCmpHeroLabels() {
+  const fork = $('#stCmpStyle').value === 'fork';
+  $('#cmpHeroALabel').firstChild.textContent = fork ? '主人公（空欄ならおまかせ）' : 'Aの人物（空欄ならおまかせ）';
+  $('#cmpHeroBLabel').firstChild.textContent = fork ? '分かれ道のきっかけ（空欄ならおまかせ）' : 'Bの人物（空欄ならおまかせ）';
+  $('#stCmpHeroA').placeholder = fork ? '例：田中誠、65歳。定年退職したばかりの元営業マン' : '例：佐藤和子、67歳。元パート勤務。好奇心旺盛で、近所の朝市に通う';
+  $('#stCmpHeroB').placeholder = fork ? '例：退職の翌朝、町内会の役員を頼まれる。引き受けるか、断るか' : '例：同い年の元同僚・鈴木典子。真面目で、人に迷惑をかけたくない性格';
 }
 
 function storyPlan(d) {
@@ -825,7 +850,8 @@ function renderStoryEstimate() {
   if (!state.project) return;
   const d = readStoryForm();
   const { count, sec, chars } = storyPlan(d);
-  const chap = d.genre === 'senior' ? `${d.lessons + 3}章（プロローグ・出会い・教え${d.lessons}つ・エピローグ）` : '3〜8章';
+  const chap = d.genre === 'senior' ? `${d.lessons + 3}章（プロローグ・出会い・教え${d.lessons}つ・エピローグ）`
+    : d.genre === 'compare' ? `${d.cmpCount + 3}章（プロローグ・違い${d.cmpCount}つ・○年後・エピローグ）` : '3〜8章';
   $('#stEstimate').textContent = `約${d.minutes}分 ／ ${chap} ／ 絵${count}枚（1枚あたり約${Math.round(sec)}秒） ／ セリフとナレーション 約${chars.toLocaleString()}字`;
 }
 
@@ -935,13 +961,16 @@ function initStoryForm() {
     scheduleSave({ storyIdea: state.project.storyIdea });
     renderStoryEstimate();
   };
-  ['#stTheme', '#stNotes', '#stHero', '#stMentor'].forEach(sel => $(sel).addEventListener('input', save));
-  ['#stTell', '#stMinutes', '#stTempo', '#stUseChars', '#stLessons', '#stLessonWord'].forEach(sel => $(sel).addEventListener('change', save));
+  ['#stTheme', '#stNotes', '#stHero', '#stMentor', '#stCmpA', '#stCmpB', '#stCmpHeroA', '#stCmpHeroB'].forEach(sel => $(sel).addEventListener('input', save));
+  ['#stTell', '#stMinutes', '#stTempo', '#stUseChars', '#stLessons', '#stLessonWord', '#stCmpCount', '#stCmpWord'].forEach(sel => $(sel).addEventListener('change', save));
+  $('#stCmpStyle').addEventListener('change', () => { renderCmpHeroLabels(); save(); });
   $('#stGenre').addEventListener('change', () => {
     const senior = $('#stGenre').value === 'senior';
+    const compare = $('#stGenre').value === 'compare';
     $('#seniorOpts').hidden = !senior;
-    // シニアの人生物語は、YouTubeの漫画物語に合わせた初期値にする
-    if (senior) {
+    $('#compareOpts').hidden = !compare;
+    // シニアの人生物語・比較版は、YouTubeの漫画物語に合わせた初期値にする
+    if (senior || compare) {
       $('#stTell').value = 'narration';
       if (Number($('#stMinutes').value) < 15) $('#stMinutes').value = '25';
       $('#capStyle').value = 'bottom';
@@ -956,7 +985,7 @@ function initStoryForm() {
   $('#stStop').addEventListener('click', () => { storyRun.stop = true; $('#stStop').disabled = true; $('#stStop').textContent = 'この章を書き終えたら止めます'; });
   $('#toStep2Btn').addEventListener('click', async () => { await flushSave(); goStep(2); });
   // 上演の表示（字幕の形・見出し札）
-  ['#capStyle', '#cardToggle'].forEach(sel => $(sel).addEventListener('change', () => {
+  ['#capStyle', '#cardToggle', '#sideToggle'].forEach(sel => $(sel).addEventListener('change', () => {
     save();
   }));
   // YouTube用の文
@@ -970,6 +999,16 @@ function initStoryForm() {
     $('#ytFull').value = youtubeText();
   };
   ['#ytTitle', '#ytBody', '#ytTags'].forEach(sel => $(sel).addEventListener('input', saveYt));
+  // 比較版の札の呼び名（設計図で直せる）
+  const saveCmp = () => {
+    const o = state.project?.storyOutline;
+    if (!o?.compare) return;
+    o.compare.A.label = $('#olCmpA').value.slice(0, 16);
+    o.compare.B.label = $('#olCmpB').value.slice(0, 16);
+    scheduleSave({ storyOutline: o });
+    renderScript();
+  };
+  ['#olCmpA', '#olCmpB'].forEach(sel => $(sel).addEventListener('input', saveCmp));
   const copy = async (text, msg) => {
     try { await navigator.clipboard.writeText(text); toast(msg); }
     catch (e) { toast('コピーできませんでした。文を選んでコピーしてください', true); }
@@ -984,7 +1023,13 @@ function initStoryForm() {
 function renderOutline() {
   const o = isStory() ? state.project.storyOutline : null;
   $('#outlineBox').hidden = !o;
+  renderSideToggle();
   if (!o) return;
+  $('#cmpLabels').hidden = !o.compare;
+  if (o.compare) {
+    if (document.activeElement !== $('#olCmpA')) $('#olCmpA').value = o.compare.A.label || '';
+    if (document.activeElement !== $('#olCmpB')) $('#olCmpB').value = o.compare.B.label || '';
+  }
   const scenes = state.project.scenes || [];
   const done = writtenChapters();
   $('#stResumeBtn').hidden = o.chapters.every((c, i) => done.has(i));
@@ -1027,6 +1072,23 @@ function chapterOf(i) {
   return c ? { label: c.label, title: c.title } : null;
 }
 
+// 比較版：A・Bの札の呼び名（設計図にあるときだけ）
+function compareOf() {
+  const c = isStory() ? state.project?.storyOutline?.compare : null;
+  return c && c.A && c.B ? { A: { label: c.A.label || 'A' }, B: { label: c.B.label || 'B' } } : null;
+}
+
+function sideTag(side) {
+  const c = compareOf();
+  if (!c || !side) return '';
+  const t = side === 'both' ? `見比べ：${c.A.label}／${c.B.label}` : `${side}　${c[side].label}`;
+  return `<span class="side-tag ${side}">${esc(t)}</span>`;
+}
+
+function renderSideToggle() {
+  $('#sideToggleLabel').hidden = !compareOf();
+}
+
 // 脚本の一覧（章ごとに見出し。場面をクリックすると編集）
 function renderScript() {
   const box = $('#scriptView');
@@ -1042,7 +1104,7 @@ function renderScript() {
       ? `<h4 class="sc-chap" data-ch="${ci}"></h4>` : '';
     return `${head}
     <section class="sc" data-i="${i}">
-      <header><b>場面${i + 1}</b><span>${esc(s.summary)}</span><button class="btn small ghost sc-edit">編集</button></header>
+      <header><b>場面${i + 1}</b>${sideTag(s.side)}<span>${esc(s.summary)}</span><button class="btn small ghost sc-edit">編集</button></header>
       ${(s.lines || []).map(l => l.speaker === NARRATOR
         ? `<p class="ln narr">${esc(l.text)}</p>`
         : `<p class="ln"><b style="color:${KamiBubble.colorOf(l.speaker)}">${esc(l.speaker)}${l.tone && TONE_MARK[l.tone] ? `<small>（${TONE_MARK[l.tone]}）</small>` : ''}</b><span>${esc(l.text)}</span></p>`).join('')}
@@ -1583,6 +1645,14 @@ function openSceneModal(i) {
   $('#smChars').value = (s.characters || []).join('、');
   $('#smPrompt').value = s.imagePrompt || '';
   $('#smText').textContent = s.text || '';
+  const cmp = compareOf();
+  $('#smSideWrap').hidden = !cmp;
+  if (cmp) {
+    $('#smSide').value = s.side || '';
+    $('#smSide').options[1].textContent = `A の場面（${cmp.A.label}）`;
+    $('#smSide').options[2].textContent = `B の場面（${cmp.B.label}）`;
+    $('#smSide').options[3].textContent = `見比べ（左に${cmp.A.label}・右に${cmp.B.label}）`;
+  }
   const story = isStory() && Array.isArray(s.lines);
   $('#smLinesWrap').hidden = !story;
   $('#smTextWrap').hidden = story;
@@ -2429,6 +2499,8 @@ function drawScene(i, p, elapsed, alpha) {
 }
 
 function drawCaption(i, el) {
+  const cmp = pl.story && $('#sideToggle').checked ? compareOf() : null;
+  if (cmp) KamiBubble.drawSide(pl.g, pl.cv.width, pl.cv.height, state.project.scenes[i]?.side, cmp, el, FONT_STAGE);
   if (pl.story && i === 0) KamiBubble.drawTitle(pl.g, pl.cv.width, pl.cv.height, state.project.title || '', el, FONT_STAGE);
   else if (pl.story && $('#cardToggle').checked) KamiBubble.drawChapter(pl.g, pl.cv.width, pl.cv.height, chapterOf(i), el, FONT_STAGE);
   if (!$('#subToggle').checked) return;
@@ -2815,12 +2887,13 @@ async function exportVideo() {
       let blob = null;
       if (scenes[i].imageFileId) { try { blob = (await asset(scenes[i].imageFileId)).blob; } catch (e) { } }
       items.push({ from: timeline[i].from, dur: timeline[i].dur, effect: scenes[i].effect, summary: scenes[i].summary, blob,
-        chapter: pl.story && $('#cardToggle').checked ? chapterOf(i) : null });
+        chapter: pl.story && $('#cardToggle').checked ? chapterOf(i) : null, side: scenes[i].side || '' });
     }
     const msg = {
       cmd: 'start', W, H, fps: EXPORT_FPS, fmt, handle, totalDur,
       scenes: items, caps: pl.caps, subtitles: $('#subToggle').checked, capOffset: capOffset(),
       story: !!pl.story, title: p.title || '', capStyle: $('#capStyle').value,
+      compare: pl.story && $('#sideToggle').checked ? compareOf() : null,
       audio: { data: audio.data, rate: audio.rate }
     };
     exportWorker = new Worker('export-worker.js');

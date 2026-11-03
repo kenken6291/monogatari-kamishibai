@@ -120,6 +120,7 @@
             <label>ジャンル
               <select id="stGenre">
                 <option value="senior">シニアの人生物語・○つの教え（YouTubeの漫画物語風）</option>
+                <option value="compare">比較版・○つの違い（幸せな人と後悔する人など、2人を見比べる）</option>
                 <option value="omakase">おまかせ</option>
                 <option value="sukatto">スカッと・逆転劇</option>
                 <option value="kandou">感動・泣ける</option>
@@ -173,6 +174,30 @@
             <label class="span2">主人公（空欄ならおまかせ）<input id="stHero" maxlength="300" placeholder="例：大川浩二、65歳。元総務部長。几帳面で、人に頼るのが苦手"></label>
             <label class="span2">導き役・相手役（空欄ならおまかせ）<input id="stMentor" maxlength="300" placeholder="例：近所の77歳の三上さん。脚立を肩に、ご近所の困りごとを手伝って回っている"></label>
           </div>
+          <div class="grid4" id="compareOpts" hidden>
+            <label class="span2">比べ方
+              <select id="stCmpStyle">
+                <option value="alt">違いごとに見比べる（1章に違い1つ。同じ場面で2人を比べる）</option>
+                <option value="twolife">2人の人生を順に描く（前半A・後半B、最後に並べる）</option>
+                <option value="fork">もしもの分かれ道（同じ主人公の2つの人生）</option>
+              </select>
+            </label>
+            <label>違いの数
+              <select id="stCmpCount"><option value="3">3つ</option><option value="4">4つ</option><option value="5">5つ</option><option value="6">6つ</option><option value="7">7つ</option></select>
+            </label>
+            <label>違いの呼び方
+              <select id="stCmpWord">
+                <option value="diff">○つ目の違い</option><option value="habit">○つ目の習慣</option>
+                <option value="choice">○つ目の選択</option><option value="fork">○つ目の分かれ道</option>
+                <option value="trait">○つ目の特徴</option><option value="auto">おまかせ</option>
+              </select>
+            </label>
+            <label class="span2">A（うまくいく側）の呼び名<input id="stCmpA" maxlength="16" placeholder="例：幸せな人（空欄ならおまかせ）"></label>
+            <label class="span2">B（うまくいかない側）の呼び名<input id="stCmpB" maxlength="16" placeholder="例：後悔する人（空欄ならおまかせ）"></label>
+            <label class="span2" id="cmpHeroALabel">Aの人物（空欄ならおまかせ）<input id="stCmpHeroA" maxlength="300" placeholder="例：佐藤和子、67歳。元パート勤務。好奇心旺盛で、近所の朝市に通う"></label>
+            <label class="span2" id="cmpHeroBLabel">Bの人物（空欄ならおまかせ）<input id="stCmpHeroB" maxlength="300" placeholder="例：同い年の元同僚・鈴木典子。真面目で、人に迷惑をかけたくない性格"></label>
+            <p class="note span4">A・Bの札（例：「A　幸せな人」）が上演と動画の左上に出ます。見比べの場面は、絵を左右に分けて左にA、右にBを描きます。</p>
+          </div>
           <label>そのほかの希望（時代・舞台・結末・見てほしい人など）
             <textarea id="stNotes" rows="3" maxlength="1500" placeholder="例：舞台は海の見える地方の町。季節は春から秋へ。60代の視聴者向け。統計の数字を使いたいときは、数字と出典をここに書いてください（書いたものだけを使います）。"></textarea>
           </label>
@@ -190,6 +215,11 @@
         <fieldset class="box" id="outlineBox" hidden>
           <legend>物語の設計図（章立て）</legend>
           <p class="note">章の見出しとあらすじは書き換えられます（見出しは上演の「章の見出し札」に出ます）。あらすじを変えたら「この章を書き直す」で脚本に反映します。</p>
+          <div class="cmp-labels" id="cmpLabels" hidden>
+            <span class="note">比較版の札の呼び名</span>
+            <label><span class="side-tag A">A</span><input id="olCmpA" maxlength="16"></label>
+            <label><span class="side-tag B">B</span><input id="olCmpB" maxlength="16"></label>
+          </div>
           <div id="outlineList" class="outline-list"></div>
           <div class="tools">
             <button class="btn ghost" id="stRewriteBtn" type="button">設計図はそのままで、脚本を全部書き直す</button>
@@ -393,6 +423,7 @@
                 </select>
               </label>
               <label class="check"><input type="checkbox" id="cardToggle" checked> 章の見出し札を出す</label>
+              <label class="check" id="sideToggleLabel" hidden><input type="checkbox" id="sideToggle" checked> 比較版のA・B札を出す</label>
             </div>
             <label class="inline cap-adj" id="capAdjLabel">字幕のタイミング
               <select id="capOffset">
@@ -446,6 +477,7 @@
   <ol class="howto">
     <li><b>物語の条件を決める</b>　「新しい作品をつくる」で「ものがたりを作る」を選び、テーマ・ジャンル・語り口・長さを決めて「AIで物語を作る」を押します。AIがまず章立て（設計図）を作り、章ごとに題名・登場人物・セリフ・ナレーションを書きます。</li>
     <li><b>シニアの人生物語</b>　ジャンル「シニアの人生物語・○つの教え」は、主人公が人生の先輩から教えを1つずつ学ぶ、YouTubeの漫画物語のような構成です（プロローグ→出会い→1つ目〜○つ目の教え→エピローグ）。長さは25分前後、ナレーション中心がおすすめです。</li>
+    <li><b>比較版の物語</b>　ジャンル「比較版・○つの違い」は、「老後に幸せな人と後悔する人の違い」のように、同じような境遇の2人（または同じ主人公の2つの道）を見比べる構成です（プロローグ→1つ目〜○つ目の違い→○年後→エピローグ）。比べ方は「違いごとに見比べる」「2人の人生を順に描く」「もしもの分かれ道」から選べます。上演と動画では、場面ごとに「A　幸せな人」「B　後悔する人」の札が出て、見比べの場面は絵を左右に分けて描きます。A・Bの絵は色調も変えるので、ひと目で見分けられます。札の呼び名は設計図で直せます。</li>
     <li><b>脚本を直す</b>　設計図の章の見出し・あらすじを直して「この章を書き直す」で、その章だけ作り直せます。場面ごとの「編集」で、セリフを「名前：セリフ」の形で書き直せます。</li>
     <li><b>人物の見た目と声を決める</b>　「絵と声の設定」で、人物ごとの声・特徴・三面図を決めます。先に人物を登録しておくと、その人物で物語を作ります。</li>
     <li><b>絵と声を生成して上演する</b>　「絵を一括生成」「声を一括生成」のあと上演すると、人物ごとの声に合わせて字幕（名前つき）か吹き出しが出ます。最初の場面には題名、章の始まりには見出し札が出ます。動画の書き出しにも入ります。</li>
@@ -473,7 +505,7 @@
     <button type="button" class="kind-card" data-kind="story">
       <b>ものがたりを作る</b>
       <span class="kind-sub">漫画動画・紙芝居動画風</span>
-      <span>テーマとジャンルを決めると、AIが章立てと脚本を書きます。人物ごとに声が変わり、章の見出し札つきで進みます。「定年後の5つの習慣」のような、YouTubeのシニア向け漫画物語もこちら。</span>
+      <span>テーマとジャンルを決めると、AIが章立てと脚本を書きます。人物ごとに声が変わり、章の見出し札つきで進みます。「定年後の5つの習慣」のような、YouTubeのシニア向け漫画物語や、「幸せな人と後悔する人の違い」のような比較版もこちら。</span>
     </button>
     <button type="button" class="kind-card" data-kind="novel">
       <b>小説から作る</b>
@@ -507,6 +539,14 @@
   <label>あらすじ<input id="smSummary"></label>
   <label>場所<input id="smLocation"></label>
   <label>登場人物（読点区切り）<input id="smChars"></label>
+  <label id="smSideWrap" hidden>比較のどちら側か
+    <select id="smSide">
+      <option value="">どちらでもない（導入・まとめ）</option>
+      <option value="A">A の場面</option>
+      <option value="B">B の場面</option>
+      <option value="both">見比べ（左にA・右にB）</option>
+    </select>
+  </label>
   <label id="smLinesWrap" hidden>セリフとナレーション（1行に1つ。「名前：セリフ」の形。語りは「ナレーション：」。叫ぶ・心の声・ささやきは「名前（叫）：」「名前（心）：」「名前（小声）：」）
     <textarea id="smLines" rows="9"></textarea>
     <span class="note" id="smSpeakers"></span>
