@@ -6,7 +6,7 @@ const CFG = window.APP_CONFIG || {};
 const VERSION = CFG.VERSION || '1.0.0';
 const SILENCE_MS = CFG.SPEECH_SILENCE_MS || 8000;
 const MAX_TEXT = CFG.MAX_TEXT || 60000;
-const LS = { url: 'mk_gas_url', token: 'mk_token', name: 'mk_name', help: 'mk_help_seen' };
+const LS = { url: 'mk_gas_url', token: 'mk_token', name: 'mk_name', help: 'mk_help_seen', model: 'mk_gemini_model' };
 const EFFECTS = { zoomIn: 'ゆっくり寄る', zoomOut: 'ゆっくり引く', panLeft: '左へパン', panRight: '右へパン', panUp: '上へパン', panDown: '下へパン', slideIn: 'スライドで登場', none: '動かさない' };
 const CANVAS = { '16:9': [1280, 720], '9:16': [720, 1280], '1:1': [1080, 1080] };
 const CHARS_PER_SEC = 6.5; // 音声未生成時の目安
@@ -47,6 +47,44 @@ const voiceOptions = sel => VOICES.map(([id, d]) => `<option value="${id}" ${id 
 
 /* ---------- 共通 ---------- */
 function gasUrl() { return localStorage.getItem(LS.url) || CFG.GAS_URL || ''; }
+
+/* ---------- AIモデル（Gemini）の選択 ---------- */
+const MODEL_OPTIONS = Array.isArray(CFG.GEMINI_MODEL_OPTIONS) && CFG.GEMINI_MODEL_OPTIONS.length
+  ? CFG.GEMINI_MODEL_OPTIONS : [{ value: '', label: '自動モード（汎用の最新）' }];
+function aiModel() {
+  const v = localStorage.getItem(LS.model);
+  if (v !== null && MODEL_OPTIONS.some(o => o.value === v)) return v;
+  return CFG.GEMINI_MODEL || '';
+}
+function modelLabel(v) {
+  const o = MODEL_OPTIONS.find(o => o.value === v);
+  return o ? o.label.replace(/（.*$/, '') : v;
+}
+const modelNotice = new Set();
+function showModel(used, from) {
+  const pick = aiModel();
+  $('#modelFoot').textContent = 'AI: ' + (pick ? modelLabel(pick) : '自動');
+  if (!used) return;
+  const u = $('#modelUsed');
+  if (u) u.textContent = from ? `${used}（${from} が使えなかったため自動で切替）` : used;
+  if (from && !modelNotice.has(from)) {
+    modelNotice.add(from);
+    toast(`AIモデル ${from} が使えなかったため、${used} で処理しました`);
+  }
+}
+function initModelPicker() {
+  const sel = $('#modelSelect');
+  sel.innerHTML = MODEL_OPTIONS.map(o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('');
+  sel.value = aiModel();
+  sel.addEventListener('change', () => {
+    localStorage.setItem(LS.model, sel.value);
+    modelNotice.clear();
+    $('#modelUsed').textContent = '-';
+    showModel();
+    toast('AIモデルを「' + (sel.value ? modelLabel(sel.value) : '自動モード') + '」にしました');
+  });
+  showModel();
+}
 
 let toastTimer;
 function toast(msg, err = false) {
@@ -94,7 +132,7 @@ async function apiOnce(action, data = {}) {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, token: state.token, ...data })
+      body: JSON.stringify({ action, token: state.token, aiModel: aiModel(), ...data })
     });
     j = await res.json();
   } catch (e) {
@@ -108,6 +146,7 @@ async function apiOnce(action, data = {}) {
     err.busy = msg.startsWith('BUSY:') || /\((429|500|502|503|504)\)/.test(msg);
     throw err;
   }
+  if (j.aiModel) showModel(j.aiModel, j.aiFallbackFrom);
   return j;
 }
 
@@ -322,7 +361,7 @@ function initSettings() {
     try {
       const r = await fetch(v, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: 'ping' }) });
       const j = await r.json();
-      $('#gasTestResult').textContent = j.ok ? `接続できました（サーバー v${j.version}）` : '応答はありましたがエラーです：' + j.error;
+      $('#gasTestResult').textContent = j.ok ? `接続できました（サーバー v${j.version}${j.defaultModel ? '・自動モードのAI ' + j.defaultModel : ''}）` : '応答はありましたがエラーです：' + j.error;
     } catch (e) { $('#gasTestResult').textContent = '接続できません。URLとデプロイ設定（アクセス：全員）を確認してください'; }
   });
   $('#helpBtn').addEventListener('click', () => $('#helpModal').showModal());
@@ -2971,7 +3010,7 @@ async function startRecording() {
 /* ---------- 起動 ---------- */
 async function boot() {
   $('#version').textContent = 'v' + VERSION;
-  initAuth(); initSettings(); initEditor(); initPlayer();
+  initAuth(); initSettings(); initModelPicker(); initEditor(); initPlayer();
   window.addEventListener('beforeunload', e => {
     if (state.pendingSave || state.running || (pl.rec && pl.rec.state === 'recording')) { e.preventDefault(); e.returnValue = ''; }
   });

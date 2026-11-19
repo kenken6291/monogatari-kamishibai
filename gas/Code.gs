@@ -4,7 +4,7 @@
  * ものがたりモード：テーマ → AI脚本（セリフ・ナレーション）→ 人物ごとの声 → 吹き出しで上演
  * 保存先：Google Drive（作品ごとにフォルダ / project.json）＋会員はスプレッドシート
  */
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.4.0';
 const SP = PropertiesService.getScriptProperties();
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const USER_COLS = ['email', 'name', 'salt', 'hash', 'mustChange', 'createdAt', 'agreedAt', 'lastLogin', 'failCount', 'lockedUntil'];
@@ -30,12 +30,40 @@ const VOICES = [
 const VOICE_IDS = VOICES.map(v => v[0]);
 
 function prop(k, d) { const v = SP.getProperty(k); return v ? v : d; }
+
+/* ========== Gemini モデルの選び方 ==========
+ * 文章系（text / light / 字幕同期）のモデルは次の順で決まる
+ *   1. 画面の「設定」→「AIモデル」で選んだモデル（リクエストの aiModel）
+ *   2. スクリプトプロパティ TEXT_MODEL / LIGHT_MODEL / ALIGN_MODEL
+ *   3. 自動（汎用の最新）＝ AUTO_TEXT_MODELS / AUTO_LIGHT_MODELS の先頭
+ * 指定したモデルに該当がない（廃止・未公開・名前違い）ときは、
+ * 自動の候補を先頭から順に試して、使えたモデルで処理する。
+ * 絵（image）と朗読（tts）は専用モデルなので、画面の選択では変わらない。
+ *   gemini-flash-latest      : Google が常に最新の汎用 Flash に差し替える別名
+ *   gemini-4-hydrogen        : 2026年11月時点の汎用最新モデル
+ *   gemini-3.8-flash         : 保険
+ *   gemini-2.5-flash         : 旧既定（最後の保険）
+ */
+const AUTO_TEXT_MODELS = ['gemini-flash-latest', 'gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-2.5-flash'];
+const AUTO_LIGHT_MODELS = ['gemini-flash-lite-latest'].concat(AUTO_TEXT_MODELS);
+const DEFAULT_IMAGE_MODEL = 'gemini-2.5-flash-image';
+const DEFAULT_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
+const MODEL_PATTERN = /^gemini-[a-z0-9][a-z0-9.\-]{0,60}$/;
+
+function cleanModel(v) {
+  const m = String(v || '').trim().toLowerCase();
+  return MODEL_PATTERN.test(m) && !/tts|image/.test(m) ? m : '';
+}
+
 function model(kind) {
+  if (CTX.model && (kind === 'text' || kind === 'light' || kind === 'align')) return CTX.model;
+  const text = prop('TEXT_MODEL', AUTO_TEXT_MODELS[0]);
   return {
-    text: prop('TEXT_MODEL', 'gemini-2.5-flash'),
-    image: prop('IMAGE_MODEL', 'gemini-2.5-flash-image'),
-    tts: prop('TTS_MODEL', 'gemini-2.5-flash-preview-tts'),
-    light: prop('LIGHT_MODEL', 'gemini-2.5-flash-lite')
+    text: text,
+    align: prop('ALIGN_MODEL', text),
+    image: prop('IMAGE_MODEL', DEFAULT_IMAGE_MODEL),
+    tts: prop('TTS_MODEL', DEFAULT_TTS_MODEL),
+    light: prop('LIGHT_MODEL', AUTO_LIGHT_MODELS[0])
   }[kind];
 }
 
@@ -62,7 +90,7 @@ function setup() {
 }
 
 /* ========== エントリポイント ========== */
-function doGet() { return json({ ok: true, app: 'monogatari-kamishibai', version: APP_VERSION }); }
+function doGet() { return json({ ok: true, app: 'monogatari-kamishibai', version: APP_VERSION, defaultModel: model('text') }); }
 
 function doPost(e) {
   let req;
@@ -72,8 +100,10 @@ function doPost(e) {
     if (!h) throw new Error('不明な操作です: ' + req.action);
     const open = ['ping', 'register', 'login', 'resetPassword'];
     const user = open.indexOf(req.action) >= 0 ? null : auth(req.token, req.action);
-    CTX = { email: user ? user.email : '', action: req.action };
-    return json(Object.assign({ ok: true }, h(req, user) || {}));
+    CTX = { email: user ? user.email : '', action: req.action, model: cleanModel(req.aiModel), used: '', fallbackFrom: '' };
+    const out = Object.assign({ ok: true }, h(req, user) || {});
+    if (CTX.used) { out.aiModel = CTX.used; if (CTX.fallbackFrom) out.aiFallbackFrom = CTX.fallbackFrom; }
+    return json(out);
   } catch (err) {
     return json({ ok: false, error: String(err && err.message || err) });
   }
@@ -84,7 +114,7 @@ function json(o) {
 }
 
 const HANDLERS = {
-  ping: () => ({ version: APP_VERSION }),
+  ping: () => ({ version: APP_VERSION, defaultModel: model('text') }),
   register, login, logout, me, changePassword, resetPassword,
   listProjects, getProject, saveProject, deleteProject,
   analyze, uploadFile, generateImage, generateCharacterSheet, generateTTS, getAsset,
@@ -355,61 +385,91 @@ function deleteProject(req, u) {
 }
 
 /* ========== Gemini 共通 ========== */
-let CTX = { email: '', action: '' };
+let CTX = { email: '', action: '', model: '', used: '', fallbackFrom: '' };
 
-// 2.5系のテキストモデルは「考える」トークンも課金されるため、既定で考える量を0にする
+// テキストモデルは「考える」トークンも課金されるため、既定で考える量を抑える
+//   2.5系：thinkingBudget（既定0）／3系以降・-latest：thinkingLevel 'low'
+//   モデルが対応していない（400で thinking を指摘された）ときは指定を外して再送する
 function withThinking(modelName, body, budget) {
   if (prop('THINKING', 'auto') === 'model-default') return body;
-  if (!/gemini-2\.5-(flash|pro)/.test(modelName) || /tts|image/.test(modelName)) return body;
+  if (/tts|image/.test(modelName)) return body;
   const b = budget == null ? 0 : budget;
-  body.generationConfig = Object.assign({}, body.generationConfig, {
-    thinkingConfig: { thinkingBudget: /pro/.test(modelName) ? Math.max(128, b) : b }
-  });
+  let tc;
+  if (/gemini-2\.5-(flash|pro)/.test(modelName)) tc = { thinkingBudget: /pro/.test(modelName) ? Math.max(128, b) : b };
+  else if (/^gemini-/.test(modelName)) tc = { thinkingLevel: b > 0 ? 'medium' : 'low' };
+  else return body;
+  body.generationConfig = Object.assign({}, body.generationConfig, { thinkingConfig: tc });
   return body;
 }
 
 function callGemini(modelName, body, thinkingBudget) {
   const key = prop('GEMINI_API_KEY', '');
   if (!key) throw new Error('サーバーにGEMINI_API_KEYが設定されていません');
-  withThinking(modelName, body, thinkingBudget);
   const opt = {
     method: 'post', contentType: 'application/json', muteHttpExceptions: true,
-    headers: { 'x-goog-api-key': key }, payload: JSON.stringify(body)
+    headers: { 'x-goog-api-key': key }
   };
-  // 混み合い（429/500/503）のときは待って再試行し、だめなら控えのモデルに切り替える
-  const models = [modelName];
-  const fb = fallbackModel(modelName);
-  if (fb && fb !== modelName) models.push(fb);
-  let res, code, txt, used = modelName;
+  // ・混み合い（429/500/503など）：待って再試行し、だめなら次の候補モデルへ（最大2回まで切り替え）
+  // ・モデルに該当がない（404など）：すぐ次の候補モデルへ
+  const models = modelCandidates(modelName);
+  let res, code, txt, used = modelName, busySwitch = 0;
   for (let m = 0; m < models.length; m++) {
     used = models[m];
-    if (m > 0) { withThinking(used, body, thinkingBudget); opt.payload = JSON.stringify(body); }
+    const b = withThinking(used, Object.assign({}, body), thinkingBudget);
+    opt.payload = JSON.stringify(b);
     const waits = m === 0 ? [2000, 5000, 9000] : [3000, 6000];
     for (let i = 0; i <= waits.length; i++) {
-      res = UrlFetchApp.fetch(GEMINI_BASE + used + ':generateContent', opt);
+      res = UrlFetchApp.fetch(GEMINI_BASE + encodeURIComponent(used) + ':generateContent', opt);
       code = res.getResponseCode();
       txt = res.getContentText();
-      if (code === 200) { const r = JSON.parse(txt); logUsage(used, r.usageMetadata); return r; }
+      if (code === 200) {
+        const r = JSON.parse(txt);
+        logUsage(used, r.usageMetadata);
+        CTX.used = used;
+        if (used !== modelName) CTX.fallbackFrom = modelName;
+        return r;
+      }
+      if (code === 400 && b.generationConfig && b.generationConfig.thinkingConfig && /thinking/i.test(txt)) {
+        b.generationConfig = Object.assign({}, b.generationConfig);
+        delete b.generationConfig.thinkingConfig;
+        opt.payload = JSON.stringify(b);
+        i--; continue;
+      }
       if (BUSY_CODES.indexOf(code) < 0) break;
       if (i < waits.length) Utilities.sleep(waits[i]);
     }
-    if (BUSY_CODES.indexOf(code) < 0) break;
+    if (isModelNotFound(code, txt)) { console.warn('Geminiモデル「' + used + '」に該当がないため次の候補に切り替えます'); continue; }
+    if (BUSY_CODES.indexOf(code) >= 0 && busySwitch < 2) { busySwitch++; continue; }
+    break;
   }
   let msg = txt;
   try { msg = JSON.parse(txt).error.message; } catch (e) { }
   if (BUSY_CODES.indexOf(code) >= 0) {
     throw new Error('BUSY: AIが混み合っています（Gemini ' + code + '）。しばらく待ってから、もう一度お試しください');
   }
-  throw new Error('Gemini APIエラー(' + code + '): ' + String(msg).slice(0, 300));
+  if (isModelNotFound(code, txt)) {
+    throw new Error('AIモデル（' + modelName + '）が使えませんでした。「設定」→「AIモデル」で「自動モード」を選んでください');
+  }
+  throw new Error('Gemini APIエラー(' + code + ', ' + used + '): ' + String(msg).slice(0, 300));
 }
 
 const BUSY_CODES = [429, 500, 502, 503, 504];
 
-// 混み合ったときの控えのモデル（スクリプトプロパティで変更・空欄で無効）
-function fallbackModel(name) {
-  if (/tts/.test(name)) return prop('FALLBACK_TTS_MODEL', '');
-  if (/image/.test(name)) return prop('FALLBACK_IMAGE_MODEL', '');
-  return prop('FALLBACK_TEXT_MODEL', 'gemini-2.5-flash-lite');
+// 試す順番：指定モデル → （該当なし・混雑時の）候補モデル
+//   文章系：自動の候補（AUTO_*）＋ FALLBACK_TEXT_MODEL
+//   絵・朗読：FALLBACK_IMAGE_MODEL / FALLBACK_TTS_MODEL（空欄で無効）＋ 既定モデル
+function modelCandidates(name) {
+  let list = [name];
+  if (/tts/.test(name)) list.push(prop('FALLBACK_TTS_MODEL', ''), DEFAULT_TTS_MODEL);
+  else if (/image/.test(name)) list.push(prop('FALLBACK_IMAGE_MODEL', ''), DEFAULT_IMAGE_MODEL);
+  else list = list.concat(/lite/.test(name) ? AUTO_LIGHT_MODELS : AUTO_TEXT_MODELS, [prop('FALLBACK_TEXT_MODEL', 'gemini-flash-lite-latest')]);
+  return list.filter((m, i) => m && list.indexOf(m) === i).slice(0, 7);
+}
+
+function isModelNotFound(code, text) {
+  if (code === 404) return true;
+  if (code === 400 || code === 403) return /not found|is not supported|NOT_FOUND|unknown model|invalid model|does not exist/i.test(String(text || ''));
+  return false;
 }
 
 function textOf(res) {
@@ -1031,7 +1091,7 @@ function alignWindow(req, u) {
     '',
     lines.map((t, i) => '[' + i + '] ' + t).join('\n')
   ].join('\n');
-  const res = callGemini(prop('ALIGN_MODEL', model('text')), {
+  const res = callGemini(model('align'), {
     contents: [{ parts: [{ inlineData: { mimeType: 'audio/wav', data: data } }, { text: prompt }] }],
     generationConfig: {
       responseMimeType: 'application/json', temperature: 0,
