@@ -4,7 +4,7 @@
  * ものがたりモード：テーマ → AI脚本（セリフ・ナレーション）→ 人物ごとの声 → 吹き出しで上演
  * 保存先：Google Drive（作品ごとにフォルダ / project.json）＋会員はスプレッドシート
  */
-const APP_VERSION = '2.4.0';
+const APP_VERSION = '2.5.0';
 const SP = PropertiesService.getScriptProperties();
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const USER_COLS = ['email', 'name', 'salt', 'hash', 'mustChange', 'createdAt', 'agreedAt', 'lastLogin', 'failCount', 'lockedUntil'];
@@ -85,7 +85,8 @@ function setup() {
   let sh = ss.getSheetByName('Users');
   if (!sh) { sh = ss.getSheets()[0]; sh.setName('Users'); }
   if (sh.getLastRow() === 0) { sh.appendRow(USER_COLS); sh.setFrozenRows(1); }
-  if (!SP.getProperty('GEMINI_API_KEY')) Logger.log('⚠ スクリプトプロパティ GEMINI_API_KEY を設定してください');
+  try { Logger.log('Gemini APIキー：第' + apiKeys().map(k => k.no).join('・第') + '優先を設定済み'); }
+  catch (e) { Logger.log('⚠ スクリプトプロパティ GEMINI_API_KEY_1（必要なら _2 / _3）を設定してください'); }
   Logger.log('セットアップ完了 ROOT_FOLDER_ID=' + rootId + ' SPREADSHEET_ID=' + ssId);
 }
 
@@ -100,9 +101,10 @@ function doPost(e) {
     if (!h) throw new Error('不明な操作です: ' + req.action);
     const open = ['ping', 'register', 'login', 'resetPassword'];
     const user = open.indexOf(req.action) >= 0 ? null : auth(req.token, req.action);
-    CTX = { email: user ? user.email : '', action: req.action, model: cleanModel(req.aiModel), used: '', fallbackFrom: '' };
+    CTX = { email: user ? user.email : '', action: req.action, model: cleanModel(req.aiModel), used: '', fallbackFrom: '', keyNo: 0 };
     const out = Object.assign({ ok: true }, h(req, user) || {});
     if (CTX.used) { out.aiModel = CTX.used; if (CTX.fallbackFrom) out.aiFallbackFrom = CTX.fallbackFrom; }
+    if (CTX.keyNo > 1) out.aiKeyNo = CTX.keyNo; // 第2・第3優先キーで処理したとき
     return json(out);
   } catch (err) {
     return json({ ok: false, error: String(err && err.message || err) });
@@ -385,7 +387,7 @@ function deleteProject(req, u) {
 }
 
 /* ========== Gemini 共通 ========== */
-let CTX = { email: '', action: '', model: '', used: '', fallbackFrom: '' };
+let CTX = { email: '', action: '', model: '', used: '', fallbackFrom: '', keyNo: 0 };
 
 // テキストモデルは「考える」トークンも課金されるため、既定で考える量を抑える
 //   2.5系：thinkingBudget（既定0）／3系以降・-latest：thinkingLevel 'low'
@@ -402,27 +404,104 @@ function withThinking(modelName, body, budget) {
   return body;
 }
 
-function callGemini(modelName, body, thinkingBudget) {
-  const key = prop('GEMINI_API_KEY', '');
-  if (!key) throw new Error('サーバーにGEMINI_API_KEYが設定されていません');
-  const opt = {
-    method: 'post', contentType: 'application/json', muteHttpExceptions: true,
-    headers: { 'x-goog-api-key': key }
-  };
-  // ・混み合い（429/500/503など）：待って再試行し、だめなら次の候補モデルへ（最大2回まで切り替え）
+/* ========== Gemini APIキー（第1〜第3優先・自動切り替え） ========== */
+// スクリプトプロパティ GEMINI_API_KEY_1 / _2 / _3 を優先順に使う。
+// 旧来の GEMINI_API_KEY だけが設定されている場合は、それを第1優先として扱う。
+// キーが使えない（無効・権限なし・請求未設定・利用上限429）ときは、次の優先順位のキーへ即座に切り替える。
+// 使えなかったキーはしばらく後回しにする（上限：5分／無効・権限：1時間）。全部が後回しのときは優先順に全部試す。
+const KEY_PROPS = ['GEMINI_API_KEY_1', 'GEMINI_API_KEY_2', 'GEMINI_API_KEY_3'];
+const KEY_BLOCK_QUOTA_SEC = 300;
+const KEY_BLOCK_INVALID_SEC = 3600;
+
+function apiKeys() {
+  const list = [];
+  KEY_PROPS.forEach((p, i) => {
+    let v = String(SP.getProperty(p) || '').trim();
+    if (!v && i === 0) v = String(SP.getProperty('GEMINI_API_KEY') || '').trim();
+    if (v && list.every(k => k.key !== v)) list.push({ no: i + 1, key: v });
+  });
+  if (!list.length) throw new Error('サーバーにGeminiのAPIキーが設定されていません（スクリプトプロパティ GEMINI_API_KEY_1〜3）');
+  return list;
+}
+
+// 後回し中でないキーを優先順に先頭へ（後回し中のキーも最後に残す）
+function orderedKeys(scope) {
+  const c = CacheService.getScriptCache();
+  const all = apiKeys();
+  const ok = [], later = [];
+  all.forEach(k => {
+    const blocked = c.get('gk_bad_' + k.no) || (scope && c.get('gk_busy_' + k.no + '_' + scope));
+    (blocked ? later : ok).push(k);
+  });
+  return ok.concat(later);
+}
+
+function blockKey(k, kind, scope, reason) {
+  const c = CacheService.getScriptCache();
+  if (kind === 'invalid') c.put('gk_bad_' + k.no, '1', KEY_BLOCK_INVALID_SEC);
+  else c.put('gk_busy_' + k.no + '_' + (scope || 'all'), '1', KEY_BLOCK_QUOTA_SEC);
+  console.warn('APIキー第' + k.no + '優先が使えないため次のキーへ切り替えます（' + reason + '）');
+}
+
+// キーそのものが原因のエラーか（無効・権限なし・請求未設定・API未有効化）
+function isKeyInvalid(code, text) {
+  const t = String(text || '');
+  if (code === 401) return true;
+  if (code === 400) return /API key not valid|API_KEY_INVALID|API key expired|billing/i.test(t);
+  if (code === 403) return !isModelNotFound(code, t);
+  return false;
+}
+
+// キーを優先順に試して1回分のリクエストを送る。成功・キー以外の原因の失敗はそのまま返す
+// 戻り値：{ code, txt, keyNo }
+function fetchWithKeys(url, opt, keys, scope) {
+  let last = null;
+  for (let j = 0; j < keys.length; j++) {
+    const k = keys[j];
+    const o = Object.assign({}, opt, { headers: Object.assign({}, opt.headers || {}, { 'x-goog-api-key': k.key }) });
+    const res = UrlFetchApp.fetch(url, o);
+    last = { code: res.getResponseCode(), txt: res.getContentText(), keyNo: k.no, res: res };
+    if (last.code >= 200 && last.code < 300) return last;
+    if (isKeyInvalid(last.code, last.txt)) { blockKey(k, 'invalid', scope, 'HTTP ' + last.code); continue; }
+    if (last.code === 429) { blockKey(k, 'quota', scope, '利用上限 429'); continue; }
+    return last; // 500/503など：キーを替えても同じなので、呼び出し側の待機・再試行に任せる
+  }
+  return last;
+}
+
+// エディタから実行：各キーが使えるかを確認してログに出す
+function testApiKeys() {
+  const c = CacheService.getScriptCache();
+  apiKeys().forEach(k => {
+    c.remove('gk_bad_' + k.no);
+    const r = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1',
+      { headers: { 'x-goog-api-key': k.key }, muteHttpExceptions: true });
+    const code = r.getResponseCode();
+    let msg = '';
+    try { msg = JSON.parse(r.getContentText()).error.message; } catch (e) { }
+    Logger.log('第' + k.no + '優先キー（…' + k.key.slice(-4) + '）: ' + (code === 200 ? 'OK' : 'NG ' + code + ' ' + msg));
+  });
+}
+
+function callGemini(modelName, body, thinkingBudget, fixedKey) {
+  const opt = { method: 'post', contentType: 'application/json', muteHttpExceptions: true, headers: {} };
+  // ・キーが使えない（無効・429上限など）：次の優先順位のキーへ即座に切り替え
+  // ・全キーが混み合い（429/500/503など）：待って再試行し、だめなら次の候補モデルへ（最大2回まで切り替え）
   // ・モデルに該当がない（404など）：すぐ次の候補モデルへ
   const models = modelCandidates(modelName);
-  let res, code, txt, used = modelName, busySwitch = 0;
+  let code, txt, used = modelName, busySwitch = 0;
   for (let m = 0; m < models.length; m++) {
     used = models[m];
     const b = withThinking(used, Object.assign({}, body), thinkingBudget);
     opt.payload = JSON.stringify(b);
     const waits = m === 0 ? [2000, 5000, 9000] : [3000, 6000];
     for (let i = 0; i <= waits.length; i++) {
-      res = UrlFetchApp.fetch(GEMINI_BASE + encodeURIComponent(used) + ':generateContent', opt);
-      code = res.getResponseCode();
-      txt = res.getContentText();
+      const keys = fixedKey ? [fixedKey] : orderedKeys(used);
+      const fr = fetchWithKeys(GEMINI_BASE + encodeURIComponent(used) + ':generateContent', opt, keys, used);
+      code = fr.code;
+      txt = fr.txt;
       if (code === 200) {
+        CTX.keyNo = fr.keyNo;
         const r = JSON.parse(txt);
         logUsage(used, r.usageMetadata);
         CTX.used = used;
@@ -444,8 +523,11 @@ function callGemini(modelName, body, thinkingBudget) {
   }
   let msg = txt;
   try { msg = JSON.parse(txt).error.message; } catch (e) { }
+  if (isKeyInvalid(code, txt)) {
+    throw new Error('GeminiのAPIキーがすべて使えませんでした（' + code + '）。スクリプトプロパティ GEMINI_API_KEY_1〜3 を確認してください: ' + String(msg).slice(0, 200));
+  }
   if (BUSY_CODES.indexOf(code) >= 0) {
-    throw new Error('BUSY: AIが混み合っています（Gemini ' + code + '）。しばらく待ってから、もう一度お試しください');
+    throw new Error('BUSY: AIが混み合っています（Gemini ' + code + '、全APIキーで試行済み）。しばらく待ってから、もう一度お試しください');
   }
   if (isModelNotFound(code, txt)) {
     throw new Error('AIモデル（' + modelName + '）が使えませんでした。「設定」→「AIモデル」で「自動モード」を選んでください');
@@ -961,19 +1043,22 @@ function alignNarration(req, u) {
   const n = p.narration;
   if (!n) throw new Error('朗読ファイルが取り込まれていません');
   if (!(p.scenes || []).length) throw new Error('先に場面を分けてください');
-  const key = prop('GEMINI_API_KEY', '');
-  if (!key) throw new Error('サーバーにGEMINI_API_KEYが設定されていません');
   const API = 'https://generativelanguage.googleapis.com/';
 
   // 1) Files API へ分割アップロード
-  const start = UrlFetchApp.fetch(API + 'upload/v1beta/files', {
+  //    アップロードしたファイルはそのキーのプロジェクト内でしか使えないため、
+  //    受付が通ったキーを最後（解析・削除）まで使い続ける
+  const startRes = fetchWithKeys(API + 'upload/v1beta/files', {
     method: 'post', contentType: 'application/json', muteHttpExceptions: true,
     headers: {
-      'x-goog-api-key': key, 'X-Goog-Upload-Protocol': 'resumable', 'X-Goog-Upload-Command': 'start',
+      'X-Goog-Upload-Protocol': 'resumable', 'X-Goog-Upload-Command': 'start',
       'X-Goog-Upload-Header-Content-Length': String(n.size), 'X-Goog-Upload-Header-Content-Type': n.mimeType
     },
     payload: JSON.stringify({ file: { display_name: 'narration_' + p.id } })
-  });
+  }, orderedKeys('files'), 'files');
+  const keyObj = apiKeys().filter(k => k.no === startRes.keyNo)[0];
+  const key = keyObj.key;
+  const start = startRes.res;
   const hd = start.getAllHeaders();
   let upUrl = '';
   Object.keys(hd).forEach(k => { if (k.toLowerCase() === 'x-goog-upload-url') upUrl = hd[k]; });
@@ -1013,7 +1098,7 @@ function alignNarration(req, u) {
         responseMimeType: 'application/json', temperature: 0,
         responseSchema: { type: 'OBJECT', properties: { starts: { type: 'ARRAY', items: { type: 'OBJECT', properties: { i: { type: 'INTEGER' }, sec: { type: 'NUMBER' } }, required: ['i', 'sec'] } } }, required: ['starts'] }
       }
-    });
+    }, undefined, keyObj);
     const ai = JSON.parse(textOf(res)).starts || [];
     const fixed = p.scenes.map(() => null);
     ai.forEach(a => { if (a.i > 0 && a.i < fixed.length && a.sec > 0 && a.sec < n.duration) fixed[a.i] = Number(a.sec); });
