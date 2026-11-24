@@ -4,7 +4,7 @@
  * ものがたりモード：テーマ → AI脚本（セリフ・ナレーション）→ 人物ごとの声 → 吹き出しで上演
  * 保存先：Google Drive（作品ごとにフォルダ / project.json）＋会員はスプレッドシート
  */
-const APP_VERSION = '2.5.0';
+const APP_VERSION = '2.5.1';
 const SP = PropertiesService.getScriptProperties();
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const USER_COLS = ['email', 'name', 'salt', 'hash', 'mustChange', 'createdAt', 'agreedAt', 'lastLogin', 'failCount', 'lockedUntil'];
@@ -407,7 +407,7 @@ function withThinking(modelName, body, budget) {
 /* ========== Gemini APIキー（第1〜第3優先・自動切り替え） ========== */
 // スクリプトプロパティ GEMINI_API_KEY_1 / _2 / _3 を優先順に使う。
 // 旧来の GEMINI_API_KEY だけが設定されている場合は、それを第1優先として扱う。
-// キーが使えない（無効・権限なし・請求未設定・利用上限429）ときは、次の優先順位のキーへ即座に切り替える。
+// キーが使えない（無効・権限なし・請求未設定・クレジット切れ402・利用上限429）ときは、次の優先順位のキーへ即座に切り替える。
 // 使えなかったキーはしばらく後回しにする（上限：5分／無効・権限：1時間）。全部が後回しのときは優先順に全部試す。
 const KEY_PROPS = ['GEMINI_API_KEY_1', 'GEMINI_API_KEY_2', 'GEMINI_API_KEY_3'];
 const KEY_BLOCK_QUOTA_SEC = 300;
@@ -443,11 +443,11 @@ function blockKey(k, kind, scope, reason) {
   console.warn('APIキー第' + k.no + '優先が使えないため次のキーへ切り替えます（' + reason + '）');
 }
 
-// キーそのものが原因のエラーか（無効・権限なし・請求未設定・API未有効化）
+// キーそのものが原因のエラーか（無効・権限なし・請求未設定・クレジット切れ・API未有効化）
 function isKeyInvalid(code, text) {
   const t = String(text || '');
-  if (code === 401) return true;
-  if (code === 400) return /API key not valid|API_KEY_INVALID|API key expired|billing/i.test(t);
+  if (code === 401 || code === 402) return true; // 402：前払いクレジット切れ・支払いが必要
+  if (code === 400) return /API key not valid|API_KEY_INVALID|API key expired|billing|prepayment|credits are depleted/i.test(t);
   if (code === 403) return !isModelNotFound(code, t);
   return false;
 }
@@ -524,6 +524,7 @@ function callGemini(modelName, body, thinkingBudget, fixedKey) {
   let msg = txt;
   try { msg = JSON.parse(txt).error.message; } catch (e) { }
   if (isKeyInvalid(code, txt)) {
+    if (code === 402) throw new Error('GeminiのAPIキーがすべてクレジット切れです（402）。AI Studio（https://ai.studio/projects）でクレジットを追加するか、別のキーを GEMINI_API_KEY_2 / _3 に設定してください');
     throw new Error('GeminiのAPIキーがすべて使えませんでした（' + code + '）。スクリプトプロパティ GEMINI_API_KEY_1〜3 を確認してください: ' + String(msg).slice(0, 200));
   }
   if (BUSY_CODES.indexOf(code) >= 0) {
