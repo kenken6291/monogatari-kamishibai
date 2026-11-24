@@ -98,6 +98,7 @@ function toast(msg, err = false) {
 
 // AIが混み合っているとき（サーバーが BUSY: を返したとき）は、少し待って自動でやり直す
 const BUSY_WAITS = [15, 30, 60];
+const API_TIMEOUT_MS = 420000;
 async function api(action, data = {}) {
   for (let k = 0; ; k++) {
     try { return await apiOnce(action, data); }
@@ -128,15 +129,37 @@ async function apiOnce(action, data = {}) {
   const url = gasUrl();
   if (!url) { openSettings(); throw new Error('接続先（GAS URL）が未設定です'); }
   let j;
+  // 応答が長いときは経過秒数を表示し、7分で打ち切る（GASの上限は6分）
+  const ctrl = new AbortController();
+  const t0 = Date.now();
+  const killer = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
+  const ticker = setInterval(() => {
+    const s = Math.round((Date.now() - t0) / 1000);
+    if (s >= 20) busyNote(`AIが作業中です… ${s}秒経過（長い処理は数分かかります）`);
+  }, 1000);
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, token: state.token, aiModel: aiModel(), ...data })
+      body: JSON.stringify({ action, token: state.token, aiModel: aiModel(), ...data }),
+      signal: ctrl.signal
     });
-    j = await res.json();
+    const raw = await res.text();
+    try { j = JSON.parse(raw); }
+    catch (e) {
+      // GASが時間切れなどでHTMLのエラーページを返したとき
+      const err = new Error('サーバーの処理が時間内に終わりませんでした。自動でもう一度試します');
+      err.busy = true; throw err;
+    }
   } catch (e) {
+    if (e.busy) throw e;
+    if (e.name === 'AbortError') {
+      const err = new Error('サーバーから応答がありません（時間切れ）。自動でもう一度試します');
+      err.busy = true; throw err;
+    }
     throw new Error('サーバーに接続できませんでした。GAS URLと通信状況を確認してください');
+  } finally {
+    clearTimeout(killer); clearInterval(ticker); busyNote('');
   }
   if (!j.ok) {
     const msg = j.error || 'エラーが発生しました';
