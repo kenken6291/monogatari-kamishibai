@@ -4,7 +4,7 @@
  * ものがたりモード：テーマ → AI脚本（セリフ・ナレーション）→ 人物ごとの声 → 吹き出しで上演
  * 保存先：Google Drive（作品ごとにフォルダ / project.json）＋会員はスプレッドシート
  */
-const APP_VERSION = '2.5.1';
+const APP_VERSION = '2.6.0';
 const SP = PropertiesService.getScriptProperties();
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const USER_COLS = ['email', 'name', 'salt', 'hash', 'mustChange', 'createdAt', 'agreedAt', 'lastLogin', 'failCount', 'lockedUntil'];
@@ -101,7 +101,7 @@ function doPost(e) {
     if (!h) throw new Error('不明な操作です: ' + req.action);
     const open = ['ping', 'register', 'login', 'resetPassword'];
     const user = open.indexOf(req.action) >= 0 ? null : auth(req.token, req.action);
-    CTX = { email: user ? user.email : '', action: req.action, model: cleanModel(req.aiModel), used: '', fallbackFrom: '', keyNo: 0 };
+    CTX = { email: user ? user.email : '', action: req.action, model: cleanModel(req.aiModel), used: '', fallbackFrom: '', keyNo: 0, t0: Date.now() };
     const out = Object.assign({ ok: true }, h(req, user) || {});
     if (CTX.used) { out.aiModel = CTX.used; if (CTX.fallbackFrom) out.aiFallbackFrom = CTX.fallbackFrom; }
     if (CTX.keyNo > 1) out.aiKeyNo = CTX.keyNo; // 第2・第3優先キーで処理したとき
@@ -343,6 +343,7 @@ function saveProject(req, u) {
           ['summary', 'location', 'characters', 'imagePrompt'].forEach(f => { if (s[f] !== undefined) p.scenes[i][f] = s[f]; });
           if (EFFECTS.indexOf(s.effect) >= 0) p.scenes[i].effect = s.effect;
           if (s.side !== undefined) p.scenes[i].side = cleanSide(s.side);
+          if (s.holdSec !== undefined) { const h = Number(s.holdSec); p.scenes[i].holdSec = h > 0 ? Math.min(600, Math.round(h * 10) / 10) : 0; }
           if (Array.isArray(s.lines) && p.scenes[i].lines) updateLines(p.scenes[i], s.lines);
         });
       } else if (k === 'characters') {
@@ -387,7 +388,12 @@ function deleteProject(req, u) {
 }
 
 /* ========== Gemini 共通 ========== */
-let CTX = { email: '', action: '', model: '', used: '', fallbackFrom: '', keyNo: 0 };
+let CTX = { email: '', action: '', model: '', used: '', fallbackFrom: '', keyNo: 0, t0: Date.now() };
+
+// GASの実行時間上限（6分）に当たる前に打ち切り、画面側の自動やり直しに任せる
+const TIME_BUDGET_MS = 270000;
+function elapsedMs() { return Date.now() - (CTX.t0 || Date.now()); }
+function overBudget(extraMs) { return elapsedMs() + (extraMs || 0) > TIME_BUDGET_MS; }
 
 // テキストモデルは「考える」トークンも課金されるため、既定で考える量を抑える
 //   2.5系：thinkingBudget（既定0）／3系以降・-latest：thinkingLevel 'low'
@@ -457,6 +463,7 @@ function isKeyInvalid(code, text) {
 function fetchWithKeys(url, opt, keys, scope) {
   let last = null;
   for (let j = 0; j < keys.length; j++) {
+    if (j > 0 && overBudget()) break;
     const k = keys[j];
     const o = Object.assign({}, opt, { headers: Object.assign({}, opt.headers || {}, { 'x-goog-api-key': k.key }) });
     const res = UrlFetchApp.fetch(url, o);
@@ -496,6 +503,7 @@ function callGemini(modelName, body, thinkingBudget, fixedKey) {
     opt.payload = JSON.stringify(b);
     const waits = m === 0 ? [2000, 5000, 9000] : [3000, 6000];
     for (let i = 0; i <= waits.length; i++) {
+      if ((m > 0 || i > 0) && overBudget()) throw new Error('BUSY: AIの応答に時間がかかっています（' + Math.round(elapsedMs() / 1000) + '秒）。自動でもう一度試します');
       const keys = fixedKey ? [fixedKey] : orderedKeys(used);
       const fr = fetchWithKeys(GEMINI_BASE + encodeURIComponent(used) + ':generateContent', opt, keys, used);
       code = fr.code;
@@ -515,7 +523,7 @@ function callGemini(modelName, body, thinkingBudget, fixedKey) {
         i--; continue;
       }
       if (BUSY_CODES.indexOf(code) < 0) break;
-      if (i < waits.length) Utilities.sleep(waits[i]);
+      if (i < waits.length) { if (overBudget(waits[i])) break; Utilities.sleep(waits[i]); }
     }
     if (isModelNotFound(code, txt)) { console.warn('Geminiモデル「' + used + '」に該当がないため次の候補に切り替えます'); continue; }
     if (BUSY_CODES.indexOf(code) >= 0 && busySwitch < 2) { busySwitch++; continue; }

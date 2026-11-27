@@ -408,3 +408,23 @@ label.inline select { width: auto; margin: 0; }
 .cmp-labels { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; margin: 0 0 .6rem; }
 .cmp-labels label { display: flex; align-items: center; gap: .4rem; margin: 0; }
 .cmp-labels input { width: 12em; margin: 0; }
+
+/* v2.6.0 場面の時間を直接直す */
+.scenes .tm { min-width: 9.5em; }
+.scenes .tm-edit { display: inline-flex; align-items: center; gap: 2px; }
+.scenes .tm-in { width: 5.2em; padding: .2rem .3rem; font: inherit; font-variant-numeric: tabular-nums; color: var(--ink); text-align: center; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+.scenes .tm-in:focus { outline: 2px solid var(--ink); outline-offset: 1px; }
+.scenes .tm-in.tm-dur { width: 4.2em; }
+.scenes .tm-nudge { width: 1.7em; height: 1.7em; padding: 0; font: inherit; line-height: 1; border: 1px solid var(--line); border-radius: 4px; background: var(--sheet); color: var(--ink); cursor: pointer; }
+.scenes .tm-nudge:hover { background: var(--washi); }
+.scenes .tm-fixed { display: inline-block; padding: .2rem .3rem; color: var(--ink); }
+.scenes .tm-to { margin-top: .2rem; padding-left: .3rem; }
+.scenes .tm-len { display: block; margin-top: .3rem; color: var(--ink); }
+.scenes .tm-listen, .scenes .tm-auto { display: block; margin-top: .3rem; padding: .15rem .45rem; font: inherit; font-size: .75rem; border: 1px solid var(--line); border-radius: 4px; background: var(--sheet); color: var(--ink); cursor: pointer; }
+.scenes .tm-listen.on { background: #fbf3dc; }
+.scenes .tm-est, .scenes .tm-warn { display: block; margin-top: .2rem; }
+.scenes .tm-warn { color: #b3261e; }
+@media (max-width: 860px) {
+  .scenes td.tm { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .6rem; }
+  .scenes .tm-to, .scenes .tm-len, .scenes .tm-listen, .scenes .tm-auto, .scenes .tm-est, .scenes .tm-warn { margin-top: 0; }
+}

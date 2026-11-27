@@ -189,6 +189,24 @@ function fmtTime(sec) {
   return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
 }
 
+// 0.1秒単位の表示（例 1:05.3）
+function fmtTimeD(sec) {
+  sec = Math.max(0, Math.round(sec * 10) / 10);
+  const m = Math.floor(sec / 60);
+  return m + ':' + (sec - m * 60).toFixed(1).padStart(4, '0');
+}
+
+// 「1:23.5」「83.5」「1分23秒」「１：２３」などを秒に。空欄は null、読めなければ NaN
+function parseTime(str) {
+  let t = String(str ?? '').trim()
+    .replace(/[０-９．：]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/分/g, ':').replace(/秒/g, '').replace(/\s+/g, '');
+  if (!t) return null;
+  const m = t.match(/^(?:(\d+):)?(\d+(?:\.\d+)?)$/);
+  if (!m) return NaN;
+  return (m[1] ? Number(m[1]) * 60 : 0) + Number(m[2]);
+}
+
 function b64ToBlob(b64, type) {
   const bin = atob(b64);
   const arr = new Uint8Array(bin.length);
@@ -1543,7 +1561,9 @@ function renderChars() {
 }
 
 /* ---------- 場面表・タイムライン ---------- */
-function sceneDur(s) { return s.duration || Math.max(3, (s.text || '').length / CHARS_PER_SEC); }
+// 場面の長さ：手で決めた長さ（holdSec）＞声の長さ＞文字数からの目安
+function autoDur(s) { return s.duration || Math.max(3, (s.text || '').length / CHARS_PER_SEC); }
+function sceneDur(s) { return s.holdSec > 0 ? s.holdSec : autoDur(s); }
 
 function audioMode() {
   const p = state.project;
@@ -1562,7 +1582,7 @@ function sceneTimes() {
     });
   }
   let t = 0;
-  return sc.map(s => { const d = sceneDur(s); const r = { from: t, dur: d, est: !s.duration }; t += d; return r; });
+  return sc.map(s => { const d = sceneDur(s); const r = { from: t, dur: d, est: !s.duration && !(s.holdSec > 0) }; t += d; return r; });
 }
 
 // 確定した区切り（null以外）を残し、間を文字数の比率で埋める
@@ -1616,7 +1636,7 @@ function renderScenes() {
     const busy = state.busyScenes.has(i);
     return `<tr data-i="${i}">
       <td class="no">${i + 1}</td>
-      <td class="tm">${fmtTime(from)}〜${fmtTime(from + d)}${est ? '<br><small>（目安）</small>' : ''}</td>
+      <td class="tm">${timeCell(s, i, from, d, est, narr)}</td>
       <td><div class="thumb ${tcls}" data-fid="${esc(s.imageFileId || '')}">${s.imageFileId ? '…' : '未生成'}</div></td>
       <td><div class="sum">${esc(s.summary)}</div>
         <div class="tags">${esc(s.location || '')}${s.characters?.length ? '／' + esc(s.characters.join('、')) : ''}${s.bgRefFileId ? '／背景参考あり' : ''}</div>
@@ -1637,6 +1657,7 @@ function renderScenes() {
     const i = Number(tr.dataset.i);
     const s = scenes[i];
     $('.eff', tr).addEventListener('change', e => { s.effect = e.target.value; scheduleSave({ scenes }); });
+    bindTimeCell(tr, i);
     const on = (sel, fn) => { const b = $(sel, tr); if (b) b.addEventListener('click', fn); };
     on('.r-img', () => genOne('image', i));
     on('.r-tts', () => genOne('audio', i));
@@ -1660,6 +1681,116 @@ function renderScenes() {
   renderNarrInfo();
   renderCapSyncInfo();
   if (story) { renderScript(); renderYoutube(); }
+}
+
+/* ---------- 場面の時間を直接直す ---------- */
+const MIN_SCENE_SEC = 0.5;
+
+function timeCell(s, i, from, d, est, narr) {
+  if (narr) {
+    const start = i === 0
+      ? `<span class="tm-fixed" title="最初の場面は0:00から始まります">${fmtTimeD(0)}</span>`
+      : `<span class="tm-edit">
+          <button type="button" class="tm-nudge" data-d="-0.5" title="0.5秒早くする" aria-label="場面${i + 1}の開始を0.5秒早く">−</button>
+          <input class="tm-in tm-start" type="text" inputmode="decimal" value="${fmtTimeD(from)}" aria-label="場面${i + 1}の開始時刻（分:秒）" title="開始時刻を直接入力（例 1:23.5）。Enterで確定">
+          <button type="button" class="tm-nudge" data-d="0.5" title="0.5秒遅くする" aria-label="場面${i + 1}の開始を0.5秒遅く">＋</button>
+        </span>`;
+    return `${start}<div class="tm-to">〜${fmtTimeD(from + d)}</div>
+      ${i === 0 ? '' : `<button type="button" class="tm-listen" title="区切りの前後を聞いて確かめる">▶ 区切りを聞く</button>`}
+      ${est ? '<small class="tm-est">（目安）</small>' : ''}`;
+  }
+  const auto = autoDur(s);
+  const own = s.holdSec > 0;
+  return `${fmtTimeD(from)}〜${fmtTimeD(from + d)}
+    <label class="tm-len">長さ <input class="tm-in tm-dur" type="text" inputmode="decimal" value="${own ? s.holdSec.toFixed(1) : ''}" placeholder="${auto.toFixed(1)}" aria-label="場面${i + 1}の長さ（秒）" title="この場面を見せる秒数。空欄は${s.duration ? '声' : '文字数'}に合わせた自動（${auto.toFixed(1)}秒）">秒</label>
+    ${own ? `<button type="button" class="tm-auto" title="${s.duration ? '声の長さ' : '文字数からの目安'}（${auto.toFixed(1)}秒）に戻す">自動に戻す</button>` : ''}
+    ${own && s.duration && s.holdSec < s.duration - 0.05 ? '<small class="tm-warn">声が途中で切れます</small>' : ''}
+    ${est ? '<small class="tm-est">（目安）</small>' : ''}`;
+}
+
+function bindTimeCell(tr, i) {
+  const inp = $('.tm-in', tr);
+  if (inp) {
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
+      if (e.key === 'Escape') { inp.dataset.cancel = '1'; inp.blur(); }
+    });
+    inp.addEventListener('change', () => {
+      if (inp.dataset.cancel) { delete inp.dataset.cancel; renderScenes(); return; }
+      if (inp.classList.contains('tm-start')) setSceneStart(i, parseTime(inp.value));
+      else setSceneLength(i, parseTime(inp.value));
+    });
+    inp.addEventListener('blur', () => { if (inp.dataset.cancel) { delete inp.dataset.cancel; renderScenes(); } });
+  }
+  $$('.tm-nudge', tr).forEach(b => b.addEventListener('click', () => {
+    const st = state.project.narration.starts;
+    setSceneStart(i, st[i] + Number(b.dataset.d));
+  }));
+  const ls = $('.tm-listen', tr);
+  if (ls) ls.addEventListener('click', () => previewBoundary(i, ls));
+  const au = $('.tm-auto', tr);
+  if (au) au.addEventListener('click', () => setSceneLength(i, null));
+}
+
+// 取り込んだ朗読ファイル：場面 i の開始時刻を変える（前後の場面の区切りはそのまま）
+function setSceneStart(i, t) {
+  const n = state.project?.narration;
+  if (!n || !n.starts || i <= 0) return;
+  if (t == null || isNaN(t)) { toast('時刻は「分:秒」で入力してください（例 1:23.5）', true); renderScenes(); return; }
+  const lo = n.starts[i - 1] + MIN_SCENE_SEC;
+  const hi = (i + 1 < n.starts.length ? n.starts[i + 1] : n.duration) - MIN_SCENE_SEC;
+  if (hi < lo) { toast('前後の場面との間が短すぎて動かせません', true); renderScenes(); return; }
+  if (t < lo || t > hi) {
+    toast(`場面${i + 1}の開始は ${fmtTimeD(lo)}〜${fmtTimeD(hi)} の間にしてください（前後の場面と重なるため、範囲内に合わせました）`, true);
+    t = Math.min(hi, Math.max(lo, t));
+  }
+  n.starts[i] = Math.round(t * 10) / 10;
+  n.aligned = 'manual';
+  scheduleSave({ narrationStarts: n.starts.slice(), narrationAligned: 'manual' });
+  renderScenes();
+}
+
+// 場面ごとの声：場面 i を見せる長さを変える（null で自動に戻す）
+function setSceneLength(i, sec) {
+  const s = state.project?.scenes?.[i];
+  if (!s) return;
+  if (sec != null && (isNaN(sec) || sec <= 0)) { toast('長さは秒で入力してください（例 12.5）。空欄で自動に戻ります', true); renderScenes(); return; }
+  if (sec != null && sec < MIN_SCENE_SEC) sec = MIN_SCENE_SEC;
+  if (sec != null && sec > 600) { toast('1場面の長さは600秒までです', true); sec = 600; }
+  s.holdSec = sec == null ? 0 : Math.round(sec * 10) / 10;
+  if (s.holdSec && s.duration && s.holdSec < s.duration - 0.05) toast(`場面${i + 1}の声（${s.duration.toFixed(1)}秒）は ${s.holdSec.toFixed(1)}秒で切れます`);
+  scheduleSave({ scenes: state.project.scenes });
+  renderScenes();
+}
+
+// 区切りの2秒前から3秒後までを再生して確かめる
+let previewAu = null, previewTimer = 0;
+async function previewBoundary(i, btn) {
+  const n = state.project?.narration;
+  if (!n) return;
+  if (previewAu && !previewAu.paused && previewAu.dataset.i === String(i)) { previewAu.pause(); return; }
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = '読み込み中…';
+  try {
+    const nc = await narrationBlob();
+    if (!previewAu) {
+      previewAu = new Audio();
+      previewAu.addEventListener('pause', () => { clearTimeout(previewTimer); $$('.tm-listen.on').forEach(b => { b.classList.remove('on'); b.textContent = '▶ 区切りを聞く'; }); });
+    }
+    previewAu.pause();
+    if (previewAu.src !== nc.url) previewAu.src = nc.url;
+    const t = n.starts[i];
+    const from = Math.max(0, t - 2);
+    previewAu.dataset.i = String(i);
+    await new Promise(res => { if (previewAu.readyState >= 1) res(); else previewAu.addEventListener('loadedmetadata', res, { once: true }); });
+    previewAu.currentTime = from;
+    await previewAu.play();
+    btn.classList.add('on'); btn.textContent = '■ 止める';
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => previewAu.pause(), (t + 3 - from) * 1000);
+    return;
+  } catch (e) { toast('朗読を再生できませんでした：' + e.message, true); }
+  finally { btn.disabled = false; if (!btn.classList.contains('on')) btn.textContent = label; }
 }
 
 async function loadThumbs(root) {
@@ -2417,7 +2548,7 @@ async function preparePlayer() {
   renderCueList();
   if (!scenes.length) { $('#prepStatus').textContent = '場面がありません'; drawCard('場面がまだありません'); return; }
   const mode = audioMode();
-  const sig = p.id + ':' + mode + ':' + (mode === 'narration' ? p.narration.uploadId + '@' + p.narration.starts.join(',') : '') + ':' + scenes.map(s => (s.imageFileId || '') + (s.audioFileId || '')).join('|') + ':' + (p.captions ? p.captions.at : '')
+  const sig = p.id + ':' + mode + ':' + (mode === 'narration' ? p.narration.uploadId + '@' + p.narration.starts.join(',') : '') + ':' + scenes.map(s => (s.imageFileId || '') + (s.audioFileId || '') + (s.holdSec > 0 ? '~' + s.holdSec : '')).join('|') + ':' + (p.captions ? p.captions.at : '')
     + ':' + (isStory() ? scenes.map(s => (s.lines || []).map(l => (l.tone || 'n')[0] + l.speaker + l.text.length).join(',')).join('|') : '');
   if (pl.ready && pl.loadingFor === sig) { $('#prepStatus').textContent = '準備できています'; return; }
   pl.ready = false; pl.loadingFor = sig;
@@ -2442,7 +2573,7 @@ async function preparePlayer() {
         }
         if (mode === 'scenes' && s.audioFileId) {
           const a = await asset(s.audioFileId);
-          pl.buffers[i] = await pl.ctx.decodeAudioData(await a.blob.arrayBuffer());
+          pl.buffers[i] = fitBuffer(await pl.ctx.decodeAudioData(await a.blob.arrayBuffer()), s.holdSec);
         }
       } catch (e) { console.warn('素材の読み込み失敗', i, e); }
       done++; status();
@@ -2619,12 +2750,27 @@ function frame() {
   pl.raf = requestAnimationFrame(frame);
 }
 
+// 手で決めた長さに合わせて、無音を足す／途中で切る
+function fitBuffer(buf, sec) {
+  if (!(sec > 0) || Math.abs(buf.duration - sec) < 0.02) return buf;
+  const len = Math.max(1, Math.round(buf.sampleRate * sec));
+  const out = pl.ctx.createBuffer(buf.numberOfChannels, len, buf.sampleRate);
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const src = buf.getChannelData(c), dst = out.getChannelData(c);
+    const n = Math.min(len, src.length);
+    dst.set(src.subarray(0, n));
+    // 切る場合は最後の0.15秒を絞ってプツッと鳴らないように
+    if (len < src.length) { const f = Math.min(n, Math.round(buf.sampleRate * 0.15)); for (let k = 0; k < f; k++) dst[n - 1 - k] *= k / f; }
+  }
+  return out;
+}
+
 function startScene() {
   const i = pl.idx;
   const s = state.project.scenes[i];
   let buf = pl.buffers[i];
   if (!buf) {
-    const sec = Math.max(3, (s.text || '').length / CHARS_PER_SEC);
+    const sec = sceneDur(s);
     buf = pl.ctx.createBuffer(1, Math.round(pl.ctx.sampleRate * sec), pl.ctx.sampleRate);
   }
   const src = pl.ctx.createBufferSource();
@@ -2935,7 +3081,7 @@ async function exportVideo() {
     } else {
       let t = 0;
       timeline = scenes.map((s, i) => {
-        const d = pl.buffers[i] ? pl.buffers[i].duration : Math.max(3, (s.text || '').length / CHARS_PER_SEC);
+        const d = pl.buffers[i] ? pl.buffers[i].duration : sceneDur(s);
         const r = { from: t, dur: d }; t += d; return r;
       });
       totalDur = t;
