@@ -1256,6 +1256,11 @@ function scriptCues() {
     }
     items.forEach(c => out.push({ ...head, ...c, from: Math.max(0, base + c.from - off), to: Math.max(0, base + c.to - off) }));
   });
+  // 場面の区切りをまたいで2つに分かれた字幕は1つにまとめる
+  for (let k = out.length - 1; k > 0; k--) {
+    const a = out[k - 1], b = out[k];
+    if (a.text === b.text && a.speaker === b.speaker && Math.abs(b.from - a.to) < 0.06) { a.to = b.to; out.splice(k, 1); }
+  }
   // 重なり・短すぎる表示を整える
   out.forEach((c, k) => {
     const next = out[k + 1];
@@ -1425,15 +1430,18 @@ function buildStoryNarrCaptions(maxLen) {
   const p = state.project;
   const times = sceneTimes();
   const saved = savedCaptions(maxLen);
+  // 字幕の区切りごとに、どの行（話す人）かを場面ごとに控えておく
+  const whoBy = p.scenes.map(s => {
+    const who = [];
+    (s.lines || []).forEach(l => capSegments(l.text, maxLen).forEach(() => who.push(l)));
+    return who;
+  });
   return p.scenes.map((s, i) => {
-    const lines = s.lines || [];
     const segs = capSegments(s.text, maxLen);
     const caps = saved ? saved[i] : alignCaps(segs, null, 0, times[i].dur);
-    const who = [];
-    lines.forEach(l => capSegments(l.text, maxLen).forEach(() => who.push(l)));
     const slots = {};
     return caps.map((c, k) => {
-      const l = who[k] || { speaker: NARRATOR, tone: 'normal' };
+      const l = whoBy[c.si ?? i]?.[c.k ?? k] || { speaker: NARRATOR, tone: 'normal' };
       if (l.speaker !== NARRATOR && !(l.speaker in slots)) slots[l.speaker] = Object.keys(slots).length;
       return { text: c.text, from: c.from, to: c.to, speaker: l.speaker, tone: l.tone || 'normal', slot: slots[l.speaker] || 0 };
     });
@@ -2304,6 +2312,22 @@ function savedCaptions(maxLen) {
   const c = p.captions;
   if (!c || c.sig !== capSig()) return null;
   const times = sceneTimes();
+  if (c.abs) {
+    // 朗読全体の時刻で同期した字幕：1本につなげてから、いまの場面の区切りに配り直す。
+    // （場面の区切りを手で直したり、AIの区切りが字幕とずれていても、字幕が抜けたり止まったりしない）
+    const flat = [];
+    for (let si = 0; si < p.scenes.length; si++) {
+      const segs = capSegments(p.scenes[si].text, maxLen);
+      const ts = c.times[si] || [];
+      if (ts.length !== segs.length) return null;
+      segs.forEach((g, k) => flat.push({ text: g.text, from: Number(ts[k]), si, k }));
+    }
+    let prev = 0;
+    flat.forEach(x => { if (!isFinite(x.from) || x.from < prev) x.from = prev; prev = x.from; });
+    const end = Math.max(prev + 0.5, p.narration?.duration || 0);
+    flat.forEach((x, k) => { x.to = k + 1 < flat.length ? flat[k + 1].from : end; });
+    return distributeAbsCaps(flat, times);
+  }
   const out = [];
   for (let si = 0; si < p.scenes.length; si++) {
     const segs = capSegments(p.scenes[si].text, maxLen);
@@ -2314,6 +2338,15 @@ function savedCaptions(maxLen) {
     out.push(segs.map((g, k) => ({ text: g.text, from: ts[k] - base, to: k + 1 < segs.length ? ts[k + 1] - base : end })));
   }
   return out;
+}
+
+// 作品の頭からの時刻の字幕を、場面ごと（場面の頭からの秒）に切り分ける。区切りをまたぐ字幕は両方の場面に出す
+function distributeAbsCaps(flat, times) {
+  return times.map(tm => {
+    const a = tm.from, b = tm.from + tm.dur;
+    return flat.filter(c => c.to > a + 0.05 && c.from < b - 0.05)
+      .map(c => ({ ...c, from: Math.max(c.from, a) - a, to: Math.min(c.to, b) - a }));
+  });
 }
 
 function renderCapSyncInfo() {
@@ -2400,11 +2433,31 @@ function saveSyncResume(r) {
 function clearSyncResume() { try { localStorage.removeItem(syncResumeKey()); } catch (e) { } }
 
 // 確認できなかった字幕は前後の確認済みの位置から文字数で補い、声の立ち上がりに吸着させる
+// AIが別の箇所の同じ言い回しに合わせてしまった時刻（前後と順番が逆になるもの）を外し、前後から補う。
+// 時刻が順に並ぶいちばん長い並びだけを残す
+function dropOutliers(items) {
+  const idx = [];
+  items.forEach((x, i) => { if (x.t != null && isFinite(x.t)) idx.push(i); else x.t = null; });
+  if (idx.length < 3) return;
+  const tails = [], tailAt = [], prevOf = new Array(idx.length).fill(-1);
+  idx.forEach((ii, n) => {
+    const t = items[ii].t;
+    let lo = 0, hi = tails.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (tails[m] <= t) lo = m + 1; else hi = m; }
+    tails[lo] = t; tailAt[lo] = n;
+    prevOf[n] = lo > 0 ? tailAt[lo - 1] : -1;
+  });
+  const keep = new Set();
+  for (let n = tailAt[tails.length - 1]; n >= 0; n = prevOf[n]) keep.add(idx[n]);
+  idx.forEach(ii => { if (!keep.has(ii)) items[ii].t = null; });
+}
+
 function finishTimes(items, audio, t0, t1) {
   const n = items.length;
   if (!n) return;
   const cum = [0];
   items.forEach((x, i) => { cum[i + 1] = cum[i] + x.text.length; });
+  dropOutliers(items);
   const known = [];
   items.forEach((x, i) => { if (x.t != null) known.push(i); });
   items.forEach((x, i) => {
