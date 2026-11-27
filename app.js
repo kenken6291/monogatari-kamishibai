@@ -2313,20 +2313,17 @@ function savedCaptions(maxLen) {
   if (!c || c.sig !== capSig()) return null;
   const times = sceneTimes();
   if (c.abs) {
-    // 朗読全体の時刻で同期した字幕：1本につなげてから、いまの場面の区切りに配り直す。
-    // （場面の区切りを手で直したり、AIの区切りが字幕とずれていても、字幕が抜けたり止まったりしない）
-    const flat = [];
+    // 朗読全体の時刻で同期した字幕：各場面の字幕は、その場面の区切りの中に必ず収める。
+    // 区切りの中にある時刻はそのまま使い、外れた時刻（AIの読み違い・区切りを手で直した等）は
+    // 前後の字幕と文字数の比率で区切りの中に置き直す。→ 場面が変われば字幕も必ず変わる
+    const out = [];
     for (let si = 0; si < p.scenes.length; si++) {
       const segs = capSegments(p.scenes[si].text, maxLen);
       const ts = c.times[si] || [];
       if (ts.length !== segs.length) return null;
-      segs.forEach((g, k) => flat.push({ text: g.text, from: Number(ts[k]), si, k }));
+      out.push(fitCapsToScene(segs, ts, times[si].from, times[si].from + times[si].dur));
     }
-    let prev = 0;
-    flat.forEach(x => { if (!isFinite(x.from) || x.from < prev) x.from = prev; prev = x.from; });
-    const end = Math.max(prev + 0.5, p.narration?.duration || 0);
-    flat.forEach((x, k) => { x.to = k + 1 < flat.length ? flat[k + 1].from : end; });
-    return distributeAbsCaps(flat, times);
+    return out;
   }
   const out = [];
   for (let si = 0; si < p.scenes.length; si++) {
@@ -2340,13 +2337,36 @@ function savedCaptions(maxLen) {
   return out;
 }
 
-// 作品の頭からの時刻の字幕を、場面ごと（場面の頭からの秒）に切り分ける。区切りをまたぐ字幕は両方の場面に出す
-function distributeAbsCaps(flat, times) {
-  return times.map(tm => {
-    const a = tm.from, b = tm.from + tm.dur;
-    return flat.filter(c => c.to > a + 0.05 && c.from < b - 0.05)
-      .map(c => ({ ...c, from: Math.max(c.from, a) - a, to: Math.min(c.to, b) - a }));
+// 1場面分の字幕（作品の頭からの時刻 ts）を、場面の区切り a〜b の中に並べ直す（戻り値は場面の頭からの秒）
+function fitCapsToScene(segs, ts, a, b) {
+  const n = segs.length;
+  if (!n) return [];
+  const span = Math.max(0.2, b - a);
+  const items = segs.map((g, k) => {
+    const t = Number(ts[k]);
+    return { text: g.text, t: isFinite(t) && t >= a - 0.3 && t <= b - 0.15 ? Math.max(a, t) : null };
   });
+  dropOutliers(items);
+  items[0].t = a; // 最初の字幕は場面の頭から出す
+  const cum = [0];
+  items.forEach((x, k) => { cum[k + 1] = cum[k] + x.text.length; });
+  for (let k = 1; k < n; k++) {
+    if (items[k].t != null && items[k].t > items[k - 1].t) continue;
+    if (items[k].t != null) items[k].t = null; // 前の字幕より前に戻るものは置き直す
+    let q = k + 1;
+    while (q < n && items[q].t == null) q++;
+    const p0 = k - 1, t0 = items[p0].t, t1 = q < n ? items[q].t : b, c0 = cum[p0], c1 = q < n ? cum[q] : cum[n];
+    for (let r = k; r < q; r++) items[r].t = t0 + (t1 - t0) * (cum[r] - c0) / Math.max(1, c1 - c0);
+    k = q - 1;
+  }
+  // 1つの字幕が短すぎて見えなくならないよう、最低0.4秒（場面に収まる範囲で）
+  const minLen = Math.min(0.4, span / n * 0.8);
+  for (let k = 1; k < n; k++) if (items[k].t < items[k - 1].t + minLen) items[k].t = items[k - 1].t + minLen;
+  for (let k = n - 1; k >= 1; k--) {
+    const lim = (k + 1 < n ? items[k + 1].t : b) - minLen;
+    if (items[k].t > lim) items[k].t = Math.max(items[k - 1].t + 0.01, lim);
+  }
+  return items.map((x, k) => ({ text: x.text, from: x.t - a, to: (k + 1 < n ? items[k + 1].t : b) - a }));
 }
 
 function renderCapSyncInfo() {
